@@ -1,0 +1,46 @@
+{
+  "mode": "learning",
+  "skills": ["React", "Typescript", "System Design"],
+  "questions": [
+    {
+      "type": "MCQ",
+      "skill": "React",
+      "difficulty": "medium",
+      "question": "What is the primary purpose of the useEffect hook in React?",
+      "options": [
+        "To manage component state",
+        "To perform side effects in function components",
+        "To create custom hooks",
+        "To optimize rendering performance"
+      ],
+      "answer": "To perform side effects in function components",
+      "explanation": "useEffect lets you perform side effects (like data fetching or subscriptions) in function components."
+    },
+    {
+      "type": "SAQ",
+      "skill": "Typescript",
+      "difficulty": "hard",
+      "question": "Explain the difference between 'interface' and 'type' in TypeScript.",
+      "answer": "Both can describe the shape of an object. The key differences are that interfaces are open and can be declaration-merged, while type aliases cannot. Types can represent union or intersection types, whereas interfaces are strictly for object structures.",
+      "explanation": "Understanding declaration merging and unions helps decide when to use interface vs type."
+    },
+    {
+      "type": "CASE",
+      "skill": "System Design",
+      "difficulty": "hard",
+      "question": "Design a high-level architecture for a real-time chat application like Slack. Focus on database choices and real-time event distribution.",
+      "answer": "The system should use WebSockets for real-time bidirectional communication. A Pub/Sub system like Redis or Kafka should be used to distribute messages across multiple WebSocket server nodes. For the database, a NoSQL data store like DynamoDB or Cassandra is preferred for high write throughput of messages.",
+      "explanation": "Scalable chat systems require decoupling WebSocket connections from underlying message processing/storage via Pub/Sub."
+    }
+  ],
+  "difficulty_distribution": {
+    "easy": 0.0,
+    "medium": 33.3,
+    "hard": 66.7
+  },
+  "coverage": {
+    "React": 33.3,
+    "Typescript": 33.3,
+    "System Design": 33.3
+  }
+}

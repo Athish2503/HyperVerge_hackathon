@@ -1,0 +1,246 @@
+﻿{
+  "$defs": {
+    "CoverageItem": {
+      "properties": {
+        "skill": {
+          "title": "Skill",
+          "type": "string"
+        },
+        "percentage": {
+          "title": "Percentage",
+          "type": "number"
+        }
+      },
+      "required": [
+        "skill",
+        "percentage"
+      ],
+      "title": "CoverageItem",
+      "type": "object"
+    },
+    "DistributionSchema": {
+      "properties": {
+        "MCQ": {
+          "title": "Mcq",
+          "type": "integer"
+        },
+        "SAQ": {
+          "title": "Saq",
+          "type": "integer"
+        },
+        "CASE": {
+          "title": "Case",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "MCQ",
+        "SAQ",
+        "CASE"
+      ],
+      "title": "DistributionSchema",
+      "type": "object"
+    },
+    "LLMAssessmentSchema": {
+      "properties": {
+        "distribution": {
+          "$ref": "#/$defs/DistributionSchema"
+        },
+        "coverage": {
+          "items": {
+            "$ref": "#/$defs/CoverageItem"
+          },
+          "title": "Coverage",
+          "type": "array"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/QuestionSchema"
+          },
+          "title": "Questions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "distribution",
+        "coverage",
+        "questions"
+      ],
+      "title": "LLMAssessmentSchema",
+      "type": "object"
+    },
+    "QuestionSchema": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "MCQ",
+            "SAQ",
+            "CASE"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "skill": {
+          "title": "Skill",
+          "type": "string"
+        },
+        "sub_skill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Skill"
+        },
+        "difficulty": {
+          "enum": [
+            "easy",
+            "medium",
+            "hard"
+          ],
+          "title": "Difficulty",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Options"
+        },
+        "answer": {
+          "title": "Answer",
+          "type": "string"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "skill",
+        "difficulty",
+        "question",
+        "answer",
+        "explanation"
+      ],
+      "title": "QuestionSchema",
+      "type": "object"
+    },
+    "SkillsSchema": {
+      "properties": {
+        "extracted": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Extracted",
+          "type": "array"
+        },
+        "normalized": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Normalized",
+          "type": "array"
+        },
+        "final": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Final",
+          "type": "array"
+        }
+      },
+      "required": [
+        "extracted",
+        "normalized",
+        "final"
+      ],
+      "title": "SkillsSchema",
+      "type": "object"
+    },
+    "ValidationSchema": {
+      "properties": {
+        "coverage_ok": {
+          "title": "Coverage Ok",
+          "type": "boolean"
+        },
+        "redundancy_score": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Redundancy Score",
+          "type": "string"
+        },
+        "difficulty_match": {
+          "title": "Difficulty Match",
+          "type": "boolean"
+        },
+        "notes": {
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "coverage_ok",
+        "redundancy_score",
+        "difficulty_match",
+        "notes"
+      ],
+      "title": "ValidationSchema",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "role": {
+      "title": "Role",
+      "type": "string"
+    },
+    "difficulty": {
+      "title": "Difficulty",
+      "type": "string"
+    },
+    "skills": {
+      "$ref": "#/$defs/SkillsSchema"
+    },
+    "assessment": {
+      "$ref": "#/$defs/LLMAssessmentSchema"
+    },
+    "validation": {
+      "$ref": "#/$defs/ValidationSchema"
+    }
+  },
+  "required": [
+    "role",
+    "difficulty",
+    "skills",
+    "assessment",
+    "validation"
+  ],
+  "title": "LLMAssessmentEngineOutput",
+  "type": "object"
+}
