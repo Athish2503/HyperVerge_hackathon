@@ -1,0 +1,1329 @@
+"use client";
+
+import { useRef, useEffect, useState } from "react";
+import { Check, X, Pencil, Eye, Edit2, Zap } from "lucide-react";
+import dynamic from "next/dynamic";
+import { QuizQuestion } from "../types";
+import type { LearningMaterialEditorHandle } from "./LearningMaterialEditor";
+import type { QuizEditorHandle } from "../types";
+import Toast from "./Toast";
+import ConfirmationDialog from "./ConfirmationDialog";
+import { TaskData } from "@/types";
+import Tooltip from "./Tooltip";
+import DatePicker from "react-datepicker";
+import "react-datepicker/dist/react-datepicker.css";
+import { formatScheduleDate } from "@/lib/utils/dateFormat";
+
+// Dynamically import the editor components
+const DynamicLearningMaterialEditor = dynamic(
+    () => import("./LearningMaterialEditor"),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="flex items-center justify-center h-full w-full">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-black dark:border-white"></div>
+            </div>
+        )
+    }
+);
+
+// Dynamically import the QuizEditor component
+const DynamicQuizEditor = dynamic(
+    () => import("./QuizEditor"),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="flex items-center justify-center h-full w-full">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-black dark:border-white"></div>
+            </div>
+        )
+    }
+);
+
+// Assignment editor
+const DynamicAssignmentEditor = dynamic(
+    () => import("./AssignmentEditor"),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="flex items-center justify-center h-full w-full">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-black dark:border-white"></div>
+            </div>
+        )
+    }
+);
+
+// Define props interface for the component
+interface CourseItemDialogProps {
+    isOpen: boolean;
+    activeItem: any; // Using any for now, should be properly typed
+    activeModuleId: string | null;
+    activeQuestionId?: string | null;
+    isEditMode: boolean;
+    isPreviewMode: boolean;
+    showPublishConfirmation: boolean;
+    dialogTitleRef: React.RefObject<HTMLHeadingElement | null>;
+    dialogContentRef: React.RefObject<HTMLDivElement | null>;
+    onClose: () => void;
+    onPublishConfirm: () => void;
+    onPublishCancel: () => void;
+    onSetShowPublishConfirmation: (show: boolean) => void;
+    onSaveItem: () => void;
+    onCancelEditMode: () => void;
+    onEnableEditMode: () => void;
+    onQuizContentChange: (questions: QuizQuestion[]) => void;
+    onQuestionChange?: (questionId: string) => void;
+    focusEditor: () => void;
+    schoolId?: string; // School ID for fetching scorecards
+    courseId?: string; // Add courseId prop for learning materials
+}
+
+const CourseItemDialog: React.FC<CourseItemDialogProps> = ({
+    isOpen,
+    activeItem,
+    activeModuleId,
+    activeQuestionId,
+    isEditMode,
+    isPreviewMode,
+    showPublishConfirmation,
+    dialogTitleRef,
+    dialogContentRef,
+    onClose,
+    onPublishConfirm,
+    onPublishCancel,
+    onSetShowPublishConfirmation,
+    onSaveItem,
+    onCancelEditMode,
+    onEnableEditMode,
+    onQuizContentChange,
+    onQuestionChange,
+    focusEditor,
+    schoolId,
+    courseId,
+}) => {
+    // Add refs for the editor components
+    const learningMaterialEditorRef = useRef<LearningMaterialEditorHandle>(null);
+    const quizEditorRef = useRef<QuizEditorHandle>(null);
+    const assignmentEditorRef = useRef<any>(null);
+
+    // Ref to store toast timeout ID
+    const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Ref to track if we've already pushed history state for current changes
+    const hasPushedHistoryRef = useRef<boolean>(false);
+
+    // State to track preview mode for any content type
+    const [previewMode, setPreviewMode] = useState(false);
+
+    // State for scheduled date
+    const [scheduledDate, setScheduledDate] = useState<Date | null>(null);
+    const [showSchedulePicker, setShowSchedulePicker] = useState(false);
+
+    // Toast state
+    const [showToast, setShowToast] = useState(false);
+    const [toastTitle, setToastTitle] = useState("Published");
+    const [toastDescription, setToastDescription] = useState("");
+    const [toastEmoji, setToastEmoji] = useState("🚀");
+
+    // Add state for close confirmation dialog
+    const [showCloseConfirmation, setShowCloseConfirmation] = useState(false);
+
+    // Add a new state variable to track which type of confirmation is being shown
+    const [confirmationType, setConfirmationType] = useState<'exit_edit_publish' | 'close' | 'exit_draft'>('exit_draft');
+
+    // Add state for save confirmation dialog
+    const [showSaveConfirmation, setShowSaveConfirmation] = useState(false);
+
+    // State to track if quiz has questions (for publish/preview button visibility)
+    const [hasQuizQuestions, setHasQuizQuestions] = useState(false);
+
+    // Add state for unsaved scorecard confirmation dialog
+    const [showUnsavedScorecardConfirmation, setShowUnsavedScorecardConfirmation] = useState(false);
+
+    const [showUnsavedScorecardChangesInfo, setShowUnsavedScorecardChangesInfo] = useState(false);
+
+    // Use useRef instead of useState for storing the pending action
+    const pendingActionRef = useRef<(() => void) | null>(null);
+
+    // Add a ref for the date picker container
+    const datePickerRef = useRef<HTMLDivElement>(null);
+
+    // Initialize scheduledDate when activeItem changes
+    useEffect(() => {
+        if (activeItem && activeItem.scheduled_publish_at) {
+            setScheduledDate(new Date(activeItem.scheduled_publish_at));
+        } else {
+            setScheduledDate(null);
+        }
+    }, [activeItem]);
+
+    // Function to validate scheduled date
+    const verifyScheduledDateAndSchedule = (date: Date | null) => {
+        if (!date) {
+            return;
+        }
+
+        if (date < new Date()) {
+            // Show error toast for dates in the past
+            displayToast("Invalid Date", "Scheduled date cannot be in the past", "⚠️");
+            return;
+        }
+
+        setScheduledDate(date);
+    }
+
+    // Reset preview mode when dialog is closed
+    useEffect(() => {
+        if (!isOpen) {
+            setPreviewMode(false);
+
+            // Clear any active toast timeout when dialog closes
+            if (toastTimeoutRef.current) {
+                clearTimeout(toastTimeoutRef.current);
+                toastTimeoutRef.current = null;
+            }
+
+            // Reset toast state when dialog closes to prevent stuck toasts
+            setShowToast(false);
+
+            // Make sure to clear questions from active item when the dialog closes for draft quizzes
+            if (activeItem &&
+                activeItem.type === 'quiz' &&
+                activeItem.status === 'draft') {
+
+                console.log('Cleaning up draft quiz questions on dialog close');
+                activeItem.questions = [];
+            }
+        } else if (isOpen) {
+            // Reset the history flag when dialog opens
+            hasPushedHistoryRef.current = false;
+
+            // Create interval to monitor for changes and push history state only once
+            window.setInterval(() => {
+                if (!activeItem) return;
+
+                const hasChanges = activeItem?.type === 'material'
+                    ? (learningMaterialEditorRef.current?.hasChanges() || false)
+                    : activeItem?.type === 'quiz'
+                        ? (quizEditorRef.current?.hasChanges() || false)
+                        : (assignmentEditorRef.current?.hasChanges() || false);
+
+                // Only push history state if we haven't already done so for this change
+                if (hasChanges && (isEditMode || activeItem?.status === 'draft') && !hasPushedHistoryRef.current) {
+                    window.history.pushState({ dialogOpen: true }, '', window.location.href);
+                    hasPushedHistoryRef.current = true;
+                }
+            }, 300);
+
+            // Reset toast state when dialog opens to prevent lingering toasts
+            if (toastTimeoutRef.current) {
+                clearTimeout(toastTimeoutRef.current);
+                toastTimeoutRef.current = null;
+            }
+            setShowToast(false);
+
+            // When dialog opens, ensure hasQuizQuestions is correctly initialized
+            if (activeItem &&
+                activeItem.type === 'quiz' &&
+                activeItem.status === 'published') {
+
+                // For published quizzes, initialize based on actual data
+                // Will be updated when data is loaded by the QuizEditor
+                setHasQuizQuestions(activeItem.questions && activeItem.questions.length > 0);
+            } else {
+                // For materials, always true
+                setHasQuizQuestions(true);
+            }
+        }
+    }, [isOpen, activeItem, isEditMode]);
+
+    // Add a capture phase event listener for Escape key
+    useEffect(() => {
+        // Handler function for keydown events in the capture phase
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // If Escape key is pressed
+            if (e.key === 'Escape') {
+                // Check for active dialog element to ensure dialog is actually open
+                const dialogElement = dialogContentRef.current;
+                if (!dialogElement) return;
+
+                // If close confirmation is already showing, don't do anything
+                if (showCloseConfirmation) {
+                    return;
+                }
+
+                // For published items in view mode, close directly
+                if (activeItem?.status === 'published' && !isEditMode) {
+                    onClose();
+                    return;
+                }
+
+                // Prevent the default behavior and stop propagation
+                e.preventDefault();
+                e.stopPropagation();
+
+                const hasChanges = activeItem?.type === 'material'
+                    ? learningMaterialEditorRef.current?.hasChanges() || false
+                    : activeItem?.type === 'quiz'
+                        ? quizEditorRef.current?.hasChanges() || false
+                        : assignmentEditorRef.current?.hasChanges() || false;
+
+                // If we're in edit mode for a published item
+                if (activeItem?.status === 'published') {
+                    // Only show confirmation if there are changes
+                    if (hasChanges) {
+                        setConfirmationType('exit_edit_publish');
+                        setShowCloseConfirmation(true);
+                    } else {
+                        // No changes, just exit edit mode
+                        onCancelEditMode();
+                    }
+                } else {
+                    // For draft items
+                    // Check if the editor/quiz has any content using the appropriate ref
+
+                    const hasContent = activeItem?.type === 'material'
+                        ? learningMaterialEditorRef.current?.hasContent() || false
+                        : quizEditorRef.current?.hasContent() || false;
+
+                    // Check if the title has been changed from default
+                    const titleElement = dialogTitleRef.current;
+                    const currentTitle = titleElement?.textContent || '';
+
+                    // Set default title based on item type
+                    let defaultTitle = "New learning material";
+                    if (activeItem.type === 'quiz') defaultTitle = "New quiz";
+
+                    const isTitleChanged = currentTitle !== defaultTitle && currentTitle.trim() !== '';
+
+                    // If there's no content and title hasn't changed, close without confirmation   
+                    if (!hasContent && !isTitleChanged) {
+                        onClose();
+                        return;
+                    }
+
+                    // Only show confirmation if there are changes
+                    if (hasChanges) {
+                        setConfirmationType('exit_draft');
+                        setShowCloseConfirmation(true);
+                    } else {
+                        // No changes, just close
+                        onClose();
+                    }
+                    return;
+                }
+            }
+        };
+
+        // Add the event listener in the capture phase to intercept before other handlers
+        document.addEventListener('keydown', handleKeyDown, true);
+
+        // Clean up the event listener when the component unmounts or when dependencies change
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown, true);
+        };
+    }, [activeItem, isEditMode, showCloseConfirmation, onClose, onCancelEditMode, dialogContentRef, dialogTitleRef]);
+
+    // Add a cleanup effect for the toast timeout when the component unmounts
+    useEffect(() => {
+        return () => {
+            // Clean up toast timeout on unmount
+            if (toastTimeoutRef.current) {
+                clearTimeout(toastTimeoutRef.current);
+                toastTimeoutRef.current = null;
+            }
+        };
+    }, []);
+
+    // Add beforeunload event listener to prevent page reload/close with unsaved changes
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            const hasChanges = activeItem?.type === 'material'
+                ? learningMaterialEditorRef.current?.hasChanges() || false
+                : quizEditorRef.current?.hasChanges() || false;
+            // Only show warning if there are actual unsaved changes
+            if (hasChanges && (isEditMode || activeItem?.status === 'draft')) {
+                e.preventDefault();
+                e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+            }
+        };
+
+        // Add the event listener
+        window.addEventListener('beforeunload', handleBeforeUnload);
+
+        // Clean up the event listener
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+        };
+    }, [activeItem, dialogTitleRef, isEditMode]);
+
+    // Handle browser back/forward navigation
+    useEffect(() => {
+        const handlePopState = (e: PopStateEvent) => {
+
+            const hasChanges = activeItem?.type === 'material'
+                ? learningMaterialEditorRef.current?.hasChanges() || false
+                : quizEditorRef.current?.hasChanges() || false;
+            // Prevent navigation if user is in edit mode, the item is a draft, or if there are unsaved changes
+            if (hasChanges && (isEditMode || activeItem?.status === 'draft')) {
+
+                // Prevent the navigation by pushing the current state back
+                window.history.pushState(null, '', window.location.href);
+
+                // Show the close confirmation dialog with appropriate type
+                if (activeItem?.status === 'published' && isEditMode) {
+                    setConfirmationType('exit_edit_publish');
+                } else {
+                    setConfirmationType('exit_draft');
+                }
+                setShowCloseConfirmation(true);
+
+                // Prevent the default navigation
+                e.preventDefault();
+                return;
+            }
+        };
+
+        // Add the event listener
+        window.addEventListener('popstate', handlePopState);
+
+        // Clean up the event listener
+        return () => {
+            window.removeEventListener('popstate', handlePopState);
+        };
+    }, [activeItem, isEditMode, dialogTitleRef]);
+
+    // Handle clicking outside of the date picker
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (datePickerRef.current && !datePickerRef.current.contains(event.target as Node)) {
+                setShowSchedulePicker(false);
+            }
+        };
+
+        if (showSchedulePicker) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [showSchedulePicker]);
+
+    // Bail early if dialog isn't open or there's no active item
+    if (!isOpen || !activeItem) return null;
+
+    // Check if the quiz has questions using the local state variable
+    // For non-quiz items, this is always true
+
+    // Function to handle closing the dialog
+    const handleCloseRequest = () => {
+        // Check if there are actual changes
+        const hasChanges = activeItem.type === 'material'
+            ? learningMaterialEditorRef.current?.hasChanges() || false
+            : activeItem.type === 'quiz'
+                ? quizEditorRef.current?.hasChanges() || false
+                : assignmentEditorRef.current?.hasChanges() || false;
+
+        // Case 1: Published learning material in edit mode 
+        if (activeItem?.status === 'published' && isEditMode) {
+            // Only show confirmation if there are changes
+            if (hasChanges) {
+                // For X button and backdrop click, we want to close the entire dialog after confirmation
+                // Use a different confirmation type to differentiate from the Cancel button
+                setConfirmationType('close');
+                setShowCloseConfirmation(true);
+            } else {
+                // No changes, just close
+                onClose();
+            }
+            return;
+        }
+
+        // Case 2: Draft items (check for content)
+        if (activeItem?.status === 'draft') {
+            // Check if the editor/quiz has any content using the appropriate ref
+            const hasContent = activeItem.type === 'material'
+                ? learningMaterialEditorRef.current?.hasContent() || false
+                : activeItem.type === 'quiz'
+                    ? quizEditorRef.current?.hasContent() || false
+                    : assignmentEditorRef.current?.hasContent() || false;
+
+            // Check if the title has been changed from default
+            const titleElement = dialogTitleRef.current;
+            const currentTitle = titleElement?.textContent || '';
+
+            // Set default title based on item type
+            let defaultTitle = "New learning material";
+            if (activeItem.type === 'quiz') defaultTitle = "New quiz";
+            if (activeItem.type === 'assignment') defaultTitle = "New assignment";
+
+            const isTitleChanged = currentTitle !== defaultTitle && currentTitle.trim() !== '';
+
+            // If there's no content and title hasn't changed, close without confirmation
+            if (!hasContent && !isTitleChanged) {
+                onClose();
+                return;
+            }
+
+            // Only show confirmation if there are changes
+            if (hasChanges) {
+                // Set confirmation type for draft items
+                setConfirmationType('exit_draft');
+                setShowCloseConfirmation(true);
+            } else {
+                // No changes, just close
+                onClose();
+            }
+            return;
+        }
+        onClose();
+    };
+
+    // Add a handler for the Cancel button in published items' edit mode
+    const handleCancelEditClick = () => {
+        // Check if there are actual changes
+        const hasChanges = activeItem.type === 'material'
+            ? learningMaterialEditorRef.current?.hasChanges() || false
+            : activeItem.type === 'quiz'
+                ? quizEditorRef.current?.hasChanges() || false
+                : assignmentEditorRef.current?.hasChanges() || false;
+
+        // Only show confirmation if there are changes
+        if (hasChanges) {
+            // Show confirmation for published items in edit mode
+            setConfirmationType('exit_edit_publish');
+            setShowCloseConfirmation(true);
+        } else {
+            // No changes, just exit edit mode
+            onCancelEditMode();
+        }
+    };
+
+    const handleConfirmSaveDraft = () => {
+        setShowCloseConfirmation(false);
+
+        // Save logic for draft: call save and then close dialog
+        if (activeItem?.type === 'material') {
+            learningMaterialEditorRef.current?.save();
+        } else if (activeItem?.type === 'quiz') {
+            quizEditorRef.current?.saveDraft();
+        } else if (activeItem?.type === 'assignment') {
+            // Validate evaluation criteria before saving draft
+            if (assignmentEditorRef.current?.validateEvaluationCriteria) {
+                const isValid = assignmentEditorRef.current.validateEvaluationCriteria();
+                if (!isValid) {
+                    return;
+                }
+            }
+            assignmentEditorRef.current?.saveDraft();
+        }
+        onClose();
+    }
+
+    // Handle confirmed close action
+    const handleConfirmDiscardChanges = () => {
+        setShowCloseConfirmation(false);
+
+        if (confirmationType === 'exit_edit_publish') {
+            // For published items in edit mode, just exit edit mode without closing the dialog
+            if (activeItem?.type === 'material') {
+                // Use the ref to call cancel directly to revert any changes
+                learningMaterialEditorRef.current?.cancel();
+            } else if (activeItem?.type === 'quiz') {
+                // Use the ref to call cancel directly to revert any changes
+                quizEditorRef.current?.cancel();
+            } else if (activeItem?.type === 'assignment') {
+                assignmentEditorRef.current?.cancel();
+            }
+
+            // Exit edit mode but keep the dialog open
+            onCancelEditMode();
+        } else {
+            // For other confirmation types (draft items or X button click), close the entire dialog
+            onClose();
+        }
+    };
+
+    // Handle cancel close action
+    const handleCancelClosingDialog = () => {
+        setShowCloseConfirmation(false);
+    };
+
+    // Handle backdrop click to close dialog
+    const handleDialogBackdropClick = (e: React.MouseEvent) => {
+        // Only close if clicking directly on the backdrop, not on the dialog content
+        if (dialogContentRef.current && !dialogContentRef.current.contains(e.target as Node)) {
+            handleCloseRequest();
+        }
+    };
+
+    // Toggle preview mode for any content type
+    const togglePreviewMode = () => {
+        // If we're not already in preview mode and trying to enter it
+        if (!previewMode) {
+            // Check content based on active item type
+            if (activeItem?.type === 'quiz' && quizEditorRef.current) {
+                // Check if current question has content
+                const hasContent = quizEditorRef.current.hasQuestionContent();
+
+                if (!hasContent) {
+                    // Show toast notification
+                    displayToast("Empty question", "Please add details to the question before previewing", "🚫");
+                    return; // Prevent entering preview mode
+                }
+
+                // Get the current question type and check for empty correct answer or missing scorecard
+                const currentQuestionType = quizEditorRef.current.getCurrentQuestionType();
+                const currentQuestionInputType = quizEditorRef.current.getCurrentQuestionInputType();
+
+                if (currentQuestionInputType === 'code') {
+                    const hasCodingLanguages = quizEditorRef.current.hasCodingLanguages();
+                    if (!hasCodingLanguages) {
+                        // Show toast notification for missing coding languages
+                        displayToast("Missing Coding Languages", "Please select at least one programming language", "🚫");
+                        return; // Prevent entering preview mode
+                    }
+                }
+
+                if (currentQuestionType === 'objective') {
+                    // For objective questions, check if correct answer is empty
+                    const hasCorrectAnswer = quizEditorRef.current.hasCorrectAnswer();
+                    if (!hasCorrectAnswer) {
+                        // Show toast notification for empty correct answer
+                        displayToast("Empty correct answer", "Please set a correct answer for this question before previewing", "🚫");
+                        // Switch to answer tab
+                        quizEditorRef.current.setActiveTab('answer');
+                        return; // Prevent entering preview mode
+                    }
+                } else if (currentQuestionType === 'subjective') {
+                    // For subjective questions, check if scorecard is set
+                    const hasScorecard = quizEditorRef.current.hasScorecard();
+                    if (!hasScorecard) {
+                        // Show toast notification for missing scorecard
+                        displayToast("Missing scorecard", "Please set a scorecard for evaluating this question before previewing", "🚫");
+                        // Switch to scorecard tab
+                        quizEditorRef.current.setActiveTab('scorecard');
+                        return; // Prevent entering preview mode
+                    }
+
+                    // Validate the scorecard criteria for subjective questions
+                    // Get the current question's scorecard data
+                    const currentQuestionConfig = quizEditorRef.current.getCurrentQuestionConfig?.();
+
+                    if (currentQuestionConfig?.scorecardData) {
+                        // Use the shared validation function to validate the scorecard criteria
+                        const isValid = quizEditorRef.current.validateScorecardCriteria(
+                            currentQuestionConfig.scorecardData,
+                            {
+                                setActiveTab: quizEditorRef.current.setActiveTab,
+                                showErrorMessage: displayToast
+                            }
+                        );
+
+                        if (!isValid) {
+                            return; // Prevent entering preview mode if validation fails
+                        }
+                    }
+                }
+            } else if (activeItem?.type === 'assignment' && assignmentEditorRef.current) {
+                // Validate assignment before previewing - shows specific error messages
+                if (assignmentEditorRef.current.validateBeforePublish) {
+                    const isValid = assignmentEditorRef.current.validateBeforePublish();
+                    if (!isValid) {
+                        return; // Validation shows its own toast via onValidationError
+                    }
+                }
+            }
+        }
+
+        // Toggle preview mode if content exists or we're exiting preview mode
+        setPreviewMode(!previewMode);
+    };
+
+    // Handle showing and hiding toast
+    const displayToast = (title: string, description: string, emoji: string = "🚀") => {
+        // Clear any existing timeout to prevent premature closing of new toast
+        if (toastTimeoutRef.current) {
+            clearTimeout(toastTimeoutRef.current);
+            toastTimeoutRef.current = null;
+        }
+
+        // Set toast content
+        setToastTitle(title);
+        setToastDescription(description);
+        setToastEmoji(emoji);
+        setShowToast(true);
+
+        // Set new timeout and store the ID for future reference
+        toastTimeoutRef.current = setTimeout(() => {
+            setShowToast(false);
+            toastTimeoutRef.current = null;
+        }, 5000); // Auto-hide after 5 seconds
+    };
+
+    // Handle save button click - show confirmation
+    const handleSaveClick = () => {
+        checkUnsavedScorecardChangesBeforeAction(() => {
+            // For quizzes, validate before showing save confirmation
+            if (activeItem?.type === 'quiz' && quizEditorRef.current) {
+                // Run validation before opening the save confirmation
+                const isValid = quizEditorRef.current.validateBeforePublish();
+                if (!isValid) {
+                    return; // Don't show confirmation if validation fails
+                }
+            }
+
+            // For assignments, run internal validation for precise messaging
+            if (activeItem?.type === 'assignment' && assignmentEditorRef.current?.validateBeforePublish) {
+                const isValid = assignmentEditorRef.current.validateBeforePublish();
+                if (!isValid) {
+                    return; // Validation shows its own toast via onValidationError
+                }
+            }
+
+            // For learning materials, validate content exists
+            if (activeItem?.type === 'material' && learningMaterialEditorRef.current) {
+                const hasContent = learningMaterialEditorRef.current.hasContent();
+                if (!hasContent) {
+                    // Show error message
+                    displayToast(
+                        "Empty learning material",
+                        "Please add content before saving",
+                        "🚫"
+                    );
+                    return; // Don't show confirmation if validation fails
+                }
+            }
+
+            // If validation passes, show save confirmation
+            setShowSaveConfirmation(true);
+        });
+    };
+
+    // Function to check for unsaved scorecard changes and handle appropriately
+    const checkUnsavedScorecardChangesBeforeAction = (action: () => void) => {
+        // For quizzes, check for unsaved scorecard changes first
+        if (activeItem?.type === 'quiz' && quizEditorRef.current) {
+            if (quizEditorRef.current.hasUnsavedScorecardChanges()) {
+                pendingActionRef.current = action;
+                setShowUnsavedScorecardConfirmation(true);
+                return;
+            }
+        }
+
+        // For assignments, check for unsaved scorecard changes
+        if (activeItem?.type === 'assignment' && assignmentEditorRef.current) {
+            if (assignmentEditorRef.current.hasUnsavedScorecardChanges && assignmentEditorRef.current.hasUnsavedScorecardChanges()) {
+                pendingActionRef.current = action;
+                setShowUnsavedScorecardConfirmation(true);
+                return;
+            }
+        }
+
+        // If no unsaved scorecard changes, proceed with the action
+        action();
+    };
+
+    // Handle unsaved scorecard confirmation - navigate to question
+    const handleGoBackToScorecard = () => {
+        setShowUnsavedScorecardConfirmation(false);
+
+        // Clear the pending action
+        pendingActionRef.current = null;
+    };
+
+    // Handle discard unsaved scorecard changes
+    const handleDiscardScorecardChanges = () => {
+        setShowUnsavedScorecardConfirmation(false);
+
+        // Execute the appropriate action based on what was being attempted
+        if (pendingActionRef.current) {
+            pendingActionRef.current();
+        }
+
+        // Clear the pending action
+        pendingActionRef.current = null;
+    };
+
+    // Handle confirmed save action
+    const handleConfirmSavePublished = () => {
+        setShowSaveConfirmation(false);
+
+        // Execute the actual save action based on item type
+        if (activeItem?.type === 'material') {
+            // Use the ref to call save directly
+            learningMaterialEditorRef.current?.save();
+        } else if (activeItem?.type === 'quiz') {
+            // Use the ref to call save directly
+            quizEditorRef.current?.savePublished();
+        } else if (activeItem?.type === 'assignment') {
+            assignmentEditorRef.current?.savePublished();
+        }
+    };
+
+    // Handle cancel save action
+    const handleCancelSave = () => {
+        setShowSaveConfirmation(false);
+    };
+
+    const isClosingDraft = confirmationType === 'exit_draft';
+
+    const getButtonClasses = (tone: 'blue' | 'green' | 'yellow' | 'yellowStrong' | 'gray' | 'violet') => {
+        const base = 'flex items-center px-4 py-2 text-sm bg-transparent rounded-full transition-colors cursor-pointer border';
+        const variants: Record<typeof tone, string> = {
+            blue: 'text-blue-600 border-blue-400 hover:bg-blue-50 focus:border-blue-500 active:border-blue-500 dark:text-white dark:border-blue-500 dark:hover:bg-[#222222]',
+            green: 'text-emerald-600 border-emerald-400 hover:bg-emerald-50 focus:border-emerald-500 active:border-emerald-500 dark:text-white dark:border-green-500 dark:hover:bg-[#222222]',
+            yellow: 'text-amber-600 border-amber-400 hover:bg-amber-50 focus:border-amber-500 active:border-amber-500 dark:text-white dark:border-yellow-500 dark:hover:bg-[#222222]',
+            yellowStrong: 'text-amber-700 border-amber-500 hover:bg-amber-100 focus:border-amber-600 active:border-amber-600 dark:text-white dark:border-amber-600 dark:hover:bg-[#222222]',
+            gray: 'text-gray-700 border-gray-300 hover:bg-gray-100 focus:border-gray-400 active:border-gray-400 dark:text-white dark:border-gray-500 dark:hover:bg-[#222222]',
+            violet: 'text-violet-600 border-violet-300 hover:bg-violet-50 focus:border-violet-400 active:border-violet-400 dark:text-white dark:border-violet-600 dark:hover:bg-[#222222]',
+        };
+        return `${base} ${variants[tone]}`;
+    };
+
+    return (
+        <>
+            <div
+                className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-[#111111]"
+                onClick={handleDialogBackdropClick}
+            >
+                <div
+                    ref={dialogContentRef}
+                    className="w-full h-full flex flex-col bg-[#f5f5f5] dark:bg-[#1A1A1A] border-none"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {/* Dialog Header */}
+                    <div className="flex items-center justify-between p-4 border-b bg-gray-100 border-gray-200 dark:bg-[#111111] dark:border-transparent">
+                        <div className="flex-1 flex items-center">
+                            <h2
+                                ref={dialogTitleRef}
+                                contentEditable={(activeItem?.status !== 'published' || isEditMode)}
+                                suppressContentEditableWarning
+                                onInput={(e) => {
+                                    // For both learning materials and quizzes, allow editing title 
+                                    // but don't propagate changes upward yet (will be handled during save)
+                                    // The current title will be stored in the DOM element
+                                    // and will be sent to the API during save/publish
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        // Blur the element to trigger save
+                                        (e.target as HTMLElement).blur();
+                                    }
+                                }}
+                                onClick={(e) => {
+                                    // Prevent click from bubbling up
+                                    e.stopPropagation();
+
+                                    // If not editable, don't continue
+                                    if ((activeItem?.status === 'published' && !isEditMode)) {
+                                        return;
+                                    }
+
+                                    // Set a flag to indicate the title is being edited
+                                    const titleElement = e.currentTarget as HTMLElement;
+                                    titleElement.dataset.editing = "true";
+                                }}
+                                className={`text-2xl font-light text-black dark:text-white outline-none empty:before:content-[attr(data-placeholder)] empty:before:text-gray-400 empty:before:pointer-events-none cursor-text mr-4 ${(activeItem?.status !== 'published' || isEditMode) ? 'w-full min-w-[300px]' : ''}`}
+                                data-placeholder={activeItem?.type === 'material' ? 'New learning material' : (activeItem?.type === 'quiz' ? 'New quiz' : 'New assignment')}
+                            >
+                                {activeItem?.title}
+                            </h2>
+                        </div>
+                        <div className="flex items-center space-x-3">
+                            {/* Preview Mode Toggle for Quizzes/Assignments */}
+                            {((activeItem?.type === 'quiz' && hasQuizQuestions) || activeItem?.type === 'assignment') && (
+                                <button
+                                    onClick={togglePreviewMode}
+                                    className={getButtonClasses('blue')}
+                                    aria-label={previewMode ? "Exit preview" : `Preview ${activeItem?.type}`}
+                                >
+                                    {previewMode ? (
+                                        <>
+                                            <Edit2 size={16} className="mr-2" />
+                                            Exit preview
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Eye size={16} className="mr-2" />
+                                            Preview
+                                        </>
+                                    )}
+                                </button>
+                            )}
+
+                            {/* Publish button for all item types */}
+                            {activeItem?.status === 'draft' &&
+                                ((activeItem?.type === 'quiz' && hasQuizQuestions) ||
+                                    activeItem?.type === 'material' ||
+                                    activeItem?.type === 'assignment') && (
+                                    <>
+                                        {/* Save Draft button */}
+                                        <button
+                                            onClick={() => {
+                                                checkUnsavedScorecardChangesBeforeAction(() => {
+                                                    handleConfirmSaveDraft();
+                                                });
+                                            }}
+                                            className={`${getButtonClasses('yellow')} mr-3`}
+                                            aria-label={`Save ${activeItem?.type} draft`}
+                                        >
+                                            <Check size={16} className="mr-2" />
+                                            Save draft
+                                        </button>
+                                        {/* Existing Publish button */}
+                                        <button
+                                            onClick={() => {
+                                                checkUnsavedScorecardChangesBeforeAction(() => {
+                                                    // For quizzes, validate before showing publish confirmation
+                                                    if (activeItem?.type === 'quiz' && quizEditorRef.current) {
+                                                        // Run validation before opening the publish confirmation
+                                                        const isValid = quizEditorRef.current.validateBeforePublish();
+                                                        if (!isValid) {
+                                                            return; // Don't show confirmation if validation fails
+                                                        }
+                                                    }
+
+                                                    // For learning materials, validate content exists
+                                                    if (activeItem?.type === 'material' && learningMaterialEditorRef.current) {
+                                                        const hasContent = learningMaterialEditorRef.current.hasContent();
+                                                        if (!hasContent) {
+                                                            // Show error message
+                                                            displayToast(
+                                                                "Empty learning material",
+                                                                "Please add content before publishing",
+                                                                "🚫"
+                                                            );
+                                                            return; // Don't show confirmation if validation fails
+                                                        }
+                                                    }
+
+                                                    // For assignments, validate using editor
+                                                    if (activeItem?.type === 'assignment' && assignmentEditorRef.current?.validateBeforePublish) {
+                                                        const isValid = assignmentEditorRef.current.validateBeforePublish();
+                                                        if (!isValid) {
+                                                            return; // Validation shows its own toast via onValidationError
+                                                        }
+                                                    }
+
+                                                    // If validation passes, show publish confirmation
+                                                    onSetShowPublishConfirmation(true);
+                                                });
+                                            }}
+                                            className={getButtonClasses('green')}
+                                            aria-label={`Publish ${activeItem?.type}`}
+                                        >
+                                            <Zap size={16} className="mr-2" />
+                                            Publish
+                                        </button>
+                                    </>
+                                )}
+
+                            {activeItem?.status === 'published' && isEditMode && !previewMode ? (
+                                <>
+                                    {scheduledDate && (
+                                        <div className="flex items-center mr-3">
+                                            <button
+                                                onClick={() => setShowSchedulePicker(!showSchedulePicker)}
+                                                className={getButtonClasses('yellowStrong')}
+                                                aria-label="Set scheduled publication date"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2">
+                                                    <circle cx="12" cy="12" r="10"></circle>
+                                                    <polyline points="12 6 12 12 16 14"></polyline>
+                                                </svg>
+                                                {formatScheduleDate(scheduledDate)}
+                                            </button>
+                                            {showSchedulePicker && (
+                                                <div
+                                                    ref={datePickerRef}
+                                                    className="absolute mt-2 top-16 z-50 p-3 rounded-lg shadow-lg bg-white border border-gray-200 dark:bg-[#242424] dark:border-gray-700"
+                                                >
+                                                    <DatePicker
+                                                        selected={scheduledDate}
+                                                        onChange={(date) => verifyScheduledDateAndSchedule(date)}
+                                                        showTimeSelect
+                                                        timeFormat="HH:mm"
+                                                        timeIntervals={15}
+                                                        dateFormat="MMMM d, yyyy h:mm aa"
+                                                        timeCaption="Time"
+                                                        minDate={new Date()} // Can't schedule in the past
+                                                        className="rounded-md p-2 px-4 w-full cursor-pointer bg-white text-gray-900 border border-gray-200 dark:bg-[#333333] dark:text-white dark:border-transparent"
+                                                        wrapperClassName="w-full publish-datepicker-wrapper dark:dark"
+                                                        calendarClassName="publish-datepicker-calendar rounded-lg shadow-lg cursor-pointer"
+                                                        inline
+                                                    />
+                                                    <div className="mt-2 flex justify-end">
+                                                        <button
+                                                            onClick={() => setShowSchedulePicker(false)}
+                                                            className="px-3 py-1 text-xs rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:text-white dark:bg-[#444444] dark:hover:bg-[#555555]"
+                                                        >
+                                                            Close
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                    <button
+                                        onClick={handleSaveClick}
+                                            className={getButtonClasses('green')}
+                                        aria-label="Save changes"
+                                    >
+                                        <Check size={16} className="mr-2" />
+                                        Save
+                                    </button>
+                                    <button
+                                        onClick={handleCancelEditClick}
+                                            className={getButtonClasses('gray')}
+                                        aria-label="Cancel editing"
+                                    >
+                                        <X size={16} className="mr-2" />
+                                        Cancel
+                                    </button>
+                                </>
+                            ) : activeItem?.status === 'published' && !isEditMode && !previewMode && (
+                                <>
+                                    {activeItem.scheduled_publish_at && (
+                                        <Tooltip content={`Scheduled for ${formatScheduleDate(new Date(activeItem.scheduled_publish_at))}`} position="bottom">
+                                            <button
+                                                className={getButtonClasses('yellowStrong')}
+                                                aria-label="Scheduled publishing information"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2">
+                                                    <circle cx="12" cy="12" r="10"></circle>
+                                                    <polyline points="12 6 12 12 16 14"></polyline>
+                                                </svg>
+                                                Scheduled
+                                            </button>
+                                        </Tooltip>
+                                    )}
+                                    <button
+                                        onClick={onEnableEditMode}
+                                            className={getButtonClasses('violet')}
+                                        aria-label="Edit item"
+                                    >
+                                        <Pencil size={16} className="mr-2" />
+                                        Edit
+                                    </button>
+                                </>
+                            )}
+                        </div>
+
+                        {/* Close button */}
+                        <button
+                            onClick={handleCloseRequest}
+                            className="ml-2 p-2 rounded-full transition-colors cursor-pointer text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-white dark:hover:text-white dark:hover:bg-[#333333]"
+                            aria-label="Close dialog"
+                        >
+                            <X size={24} />
+                        </button>
+                    </div>
+
+                    {/* Dialog Content */}
+                    <div
+                        className="flex-1 overflow-y-auto dialog-content-editor"
+                        style={{ height: 'calc(100vh - 65px)' }} // Adjust height to account for header
+                    >
+                        {activeItem?.type === 'material' ? (
+                            <DynamicLearningMaterialEditor
+                                ref={learningMaterialEditorRef}
+                                key={`material-${activeItem.id}-${isEditMode}`}
+                                readOnly={activeItem.status === 'published' && !isEditMode}
+                                showPublishConfirmation={showPublishConfirmation}
+                                onPublishConfirm={onPublishConfirm}
+                                onPublishCancel={onPublishCancel}
+                                taskId={activeItem.id}
+                                scheduledPublishAt={scheduledDate ? scheduledDate.toISOString() : null}
+                                onPublishSuccess={(updatedData?: TaskData) => {
+                                    // Handle publish success
+                                    if (updatedData) {
+                                        // Properly update the UI state first
+                                        // This will transform the publish button to edit button
+                                        if (activeItem && updatedData.status === 'published') {
+                                            activeItem.status = 'published';
+                                            activeItem.title = updatedData.title;
+                                            // Add the scheduled_publish_at value from updatedData to activeItem
+                                            activeItem.scheduled_publish_at = updatedData.scheduled_publish_at;
+
+                                            if (updatedData.scheduled_publish_at) {
+                                                setScheduledDate(new Date(updatedData.scheduled_publish_at));
+                                            } else {
+                                                setScheduledDate(null);
+                                            }
+
+                                            if (updatedData.blocks) {
+                                                // @ts-ignore - types may not perfectly match
+                                                activeItem.content = updatedData.blocks;
+                                            }
+                                        }
+
+                                        // Update will be handled by the parent component
+                                        onPublishConfirm();
+
+                                        // Clear the history state since the item is now published
+                                        // This prevents needing to click back twice after publishing
+                                        if (window.history.state && window.history.state.dialogOpen) {
+                                            window.history.back();
+                                        }
+
+                                        // Show toast notification
+                                        const publishMessage = updatedData.scheduled_publish_at ? "Your learning material has been scheduled for publishing" : "Your learning material has been published";
+                                        displayToast("Published", publishMessage);
+                                    }
+                                    // Hide the publish confirmation dialog
+                                    onSetShowPublishConfirmation(false);
+                                }}
+                                onSaveSuccess={(updatedData?: TaskData) => {
+                                    // Handle save success - similar to publish success but without status change
+                                    if (updatedData) {
+                                        // Update the activeItem with new title and content
+                                        if (activeItem) {
+                                            activeItem.title = updatedData.title;
+                                            // Add the scheduled_publish_at value when saving
+                                            activeItem.scheduled_publish_at = updatedData.scheduled_publish_at;
+
+                                            if (updatedData.blocks) {
+                                                // @ts-ignore - types may not perfectly match
+                                                activeItem.content = updatedData.blocks;
+                                            }
+                                        }
+
+                                        // Call the parent's save function
+                                        onSaveItem();
+
+                                        // Clear the history state since changes have been saved
+                                        // This prevents needing to click back twice after saving
+                                        if (window.history.state && window.history.state.dialogOpen && activeItem.status === 'published') {
+                                            window.history.back();
+                                        }
+
+                                        // Show toast notification for save success
+                                        displayToast("Saved", `Your learning material has been updated`);
+                                    }
+                                }}
+                            />
+                        ) : activeItem?.type === 'quiz' ? (
+                            <DynamicQuizEditor
+                                ref={quizEditorRef}
+                                key={`quiz-${activeItem.id}-${isEditMode}`}
+                                scheduledPublishAt={scheduledDate ? scheduledDate.toISOString() : null}
+                                    currentQuestionId={activeQuestionId || undefined}
+                                onQuestionChange={onQuestionChange}
+                                onChange={(questions) => {
+                                    // Track if there are questions for publish/preview button visibility
+                                    setHasQuizQuestions(questions.length > 0);
+                                    // Keep activeItem.questions updated for component state consistency
+                                    if (activeItem) {
+                                        activeItem.questions = questions;
+                                    }
+
+                                    // Notify parent component
+                                    onQuizContentChange(questions);
+                                }}
+                                isPreviewMode={previewMode}
+                                readOnly={activeItem.status === 'published' && !isEditMode}
+                                taskId={activeItem.id}
+                                status={activeItem.status}
+                                taskType={activeItem.type}
+                                showPublishConfirmation={showPublishConfirmation}
+                                onPublishCancel={onPublishCancel}
+                                onValidationError={(message, description) => {
+                                    // Display toast notification for validation errors during publishing
+                                    displayToast(message, description, "🚫");
+                                }}
+                                courseId={courseId}
+                                onSaveSuccess={(updatedData) => {
+                                    // Handle save success
+                                    if (updatedData) {
+                                        // Update the activeItem with the updated title and questions
+                                        if (activeItem) {
+                                            activeItem.title = updatedData.title;
+                                            // Add the scheduled_publish_at value when saving
+                                            activeItem.scheduled_publish_at = updatedData.scheduled_publish_at;
+
+                                            if (updatedData.questions) {
+                                                activeItem.questions = updatedData.questions;
+                                            }
+                                        }
+
+                                        // Call onSaveItem to exit edit mode
+                                        onSaveItem();
+
+                                        // Clear the history state since changes have been saved
+                                        // This prevents needing to click back twice after saving
+                                        if (window.history.state && window.history.state.dialogOpen && activeItem.status === 'published') {
+                                            window.history.back();
+                                        }
+
+                                        // Show toast notification for save success
+                                        displayToast("Saved", `Your ${activeItem.type} has been updated`);
+                                    }
+                                }}
+                                onPublishSuccess={(updatedData) => {
+                                    // Handle publish success
+                                    if (updatedData) {
+                                        // Properly update the UI state first
+                                        // Properly update the UI state first
+                                        // This will transform the publish button to edit button
+                                        if (activeItem && updatedData.status === 'published') {
+                                            activeItem.status = 'published';
+                                            activeItem.title = updatedData.title;
+                                            // Add the scheduled_publish_at value from updatedData to activeItem
+                                            activeItem.scheduled_publish_at = updatedData.scheduled_publish_at;
+
+                                            if (updatedData.scheduled_publish_at) {
+                                                setScheduledDate(new Date(updatedData.scheduled_publish_at));
+                                            } else {
+                                                setScheduledDate(null);
+                                            }
+
+                                            if (updatedData.questions) {
+                                                activeItem.questions = updatedData.questions;
+                                            }
+                                        }
+
+                                        // Update will be handled by the parent component
+                                        // Pass the updated data to the parent component
+                                        onPublishConfirm();
+
+                                        // Clear the history state since the item is now published
+                                        // This prevents needing to click back twice after publishing
+                                        if (window.history.state && window.history.state.dialogOpen) {
+                                            window.history.back();
+                                        }
+
+                                        // Show toast notification
+                                        const publishMessage = updatedData.scheduled_publish_at ? `Your quiz has been scheduled for publishing` : `Your quiz has been published`;
+                                        displayToast("Published", publishMessage);
+                                    }
+
+                                    // Hide the publish confirmation dialog
+                                    onSetShowPublishConfirmation(false);
+                                }}
+                                schoolId={schoolId}
+                                onQuestionChangeWithUnsavedScorecardChanges={() => {
+                                    setShowUnsavedScorecardChangesInfo(true);
+                                }}
+                            />
+                            ) : activeItem?.type === 'assignment' ? (
+                                <DynamicAssignmentEditor
+                                    ref={assignmentEditorRef}
+                                    key={`assignment-${activeItem.id}-${isEditMode}`}
+                                    readOnly={activeItem.status === 'published' && !isEditMode}
+                                    status={activeItem.status}
+                                    showPublishConfirmation={showPublishConfirmation}
+                                    onPublishCancel={onPublishCancel}
+                                    taskId={activeItem.id}
+                                    scheduledPublishAt={scheduledDate ? scheduledDate.toISOString() : null}
+                                    courseId={courseId}
+                                    schoolId={schoolId}
+                                    onValidationError={(title, message, emoji) => displayToast(title, message, emoji || '🚫')}
+                                    onPublishSuccess={(updatedData?: any) => {
+                                        if (updatedData) {
+                                            if (activeItem && updatedData.status === 'published') {
+                                                activeItem.status = 'published';
+                                                activeItem.title = updatedData.title || activeItem.title;
+                                                activeItem.scheduled_publish_at = updatedData.scheduled_publish_at;
+
+                                                if (updatedData.scheduled_publish_at) {
+                                                    setScheduledDate(new Date(updatedData.scheduled_publish_at));
+                                                } else {
+                                                    setScheduledDate(null);
+                                                }
+                                            }
+                                            onPublishConfirm();
+                                            onSetShowPublishConfirmation(false);
+
+
+                                            const publishMessage = updatedData.scheduled_publish_at ? `Your assignment has been scheduled for publishing` : `Your assignment has been published`;
+                                            displayToast("Published", publishMessage);
+                                        }
+                                    }}
+                                    onSaveSuccess={(updatedData?: any) => {
+                                        if (updatedData && activeItem) {
+                                            activeItem.title = updatedData.title || activeItem.title;
+                                            onSaveItem();
+                                            displayToast("Saved", "Your assignment has been updated");
+                                        }
+                                    }}
+                                    isPreviewMode={previewMode}
+                                />
+                        ) : null}
+                    </div>
+                </div>
+            </div>
+
+            {/* Close confirmation dialog */}
+            <ConfirmationDialog
+                open={showCloseConfirmation}
+                title={isClosingDraft ? "Save Your Progress" : "Unsaved Changes"}
+                message={
+                    isClosingDraft
+                        ?
+                        "Would you like to save your progress before leaving? If you don't save, all your progress will be lost." : "All your unsaved changes will be lost if you leave without saving. Are you sure you want to leave?"
+                }
+                confirmButtonText={isClosingDraft ? "Save" : "Discard changes"}
+                cancelButtonText={isClosingDraft ? "Discard" : "Continue editing"}
+                onConfirm={isClosingDraft ? handleConfirmSaveDraft : handleConfirmDiscardChanges}
+                onCancel={isClosingDraft ? handleConfirmDiscardChanges : handleCancelClosingDialog}
+                onClickOutside={isClosingDraft ? () => setShowCloseConfirmation(false) : handleCancelClosingDialog}
+                type={isClosingDraft ? 'save' : 'delete'}
+                showCloseButton={isClosingDraft}
+                onClose={() => setShowCloseConfirmation(false)}
+            />
+
+            {/* Save confirmation dialog */}
+            <ConfirmationDialog
+                open={showSaveConfirmation}
+                title="Ready to save changes"
+                message="These changes will be reflected to learners immediately after saving. Are you sure you want to proceed?"
+                confirmButtonText="Save"
+                cancelButtonText="Continue editing"
+                onConfirm={handleConfirmSavePublished}
+                onCancel={handleCancelSave}
+                type="publish"
+            />
+
+            {/* Unsaved scorecard confirmation dialog */}
+            <ConfirmationDialog
+                open={showUnsavedScorecardConfirmation}
+                title="Unsaved Scorecard Changes"
+                message={`The scorecard has unsaved changes. Do you want to discard them and continue, or go back to save them?`}
+                confirmButtonText="Discard changes"
+                cancelButtonText="Go Back"
+                onConfirm={handleDiscardScorecardChanges}
+                onCancel={handleGoBackToScorecard}
+                type="delete"
+            />
+
+            <ConfirmationDialog
+                open={showUnsavedScorecardChangesInfo}
+                title="You have unsaved changes"
+                message={`Your scorecard has unsaved changes. Either save them or discard them.`}
+                confirmButtonText="Go back"
+                cancelButtonText=""
+                onConfirm={() => {
+                    setShowUnsavedScorecardChangesInfo(false);
+                }}
+                onCancel={() => {
+                    setShowUnsavedScorecardChangesInfo(false);
+                }}
+                type="custom"
+            />
+
+            {/* Toast notification */}
+            <Toast
+                show={showToast}
+                title={toastTitle}
+                description={toastDescription}
+                emoji={toastEmoji}
+                onClose={() => setShowToast(false)}
+            />
+        </>
+    );
+};
+
+export default CourseItemDialog; 
