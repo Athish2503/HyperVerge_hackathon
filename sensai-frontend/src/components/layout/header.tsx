@@ -194,14 +194,26 @@ export function Header({
                                 Try a demo
                             </button>
                         )}
-                        {showCreateCourseButton && (
-                            <button
-                                onClick={handleButtonClick}
-                            className="hidden md:block px-6 py-3 text-sm font-medium rounded-full hover:opacity-90 transition-opacity focus:outline-none cursor-pointer bg-[#d1d5db] dark:bg-white text-[#1f2937] dark:text-black"
-                            >
-                                {getButtonText()}
-                            </button>
-                        )}
+                    {/* Generate Assessment Dropdown */}
+                    <div className="relative group hidden md:block">
+                        <button className="px-6 py-3 text-sm font-medium rounded-full cursor-pointer bg-blue-600 text-white hover:bg-blue-700 transition-colors focus:outline-none flex items-center gap-2 shadow-sm">
+                            Generate Assessment
+                            <ChevronDown className="w-4 h-4" />
+                        </button>
+                        <div className="absolute top-full right-0 mt-2 w-56 rounded-xl shadow-xl py-2 z-20 bg-white dark:bg-[#1A1A1A] border border-gray-100 dark:border-[#333333] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 transform origin-top-right scale-100 group-hover:scale-100">
+                            <div className="px-3 py-2 text-xs font-bold tracking-wider text-gray-400 uppercase">Assessment Engines</div>
+                            <Link href="/assessment?mode=recruiter">
+                                <span className="block px-4 py-3 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800 transition-colors cursor-pointer font-medium">
+                                    For Recruiters
+                                </span>
+                            </Link>
+                            <Link href="/assessment?mode=educator">
+                                <span className="block px-4 py-3 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800 transition-colors cursor-pointer font-medium">
+                                    For Educators / Trainers
+                                </span>
+                            </Link>
+                        </div>
+                    </div>
 
                     {/* Profile dropdown */}
                     <div className="relative" ref={profileMenuRef}>

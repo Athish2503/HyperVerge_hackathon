@@ -391,3 +391,168 @@ Execute now.
         raise HTTPException(status_code=500, detail=f"Assessment Generation Error: {str(e)}")
 
 
+# --- CURRICULUM ASSESSMENT INTELLIGENCE ENGINE (10-STEP V2) ---
+
+class V2CurriculumInput(BaseModel):
+    course_name: str
+    modules: List[str]
+    preferred_skills: Optional[List[str]] = []
+    constraints: Optional[str] = "Mix of Easy/Medium/Hard, include MCQ and Coding"
+
+class CurriculumModule(BaseModel):
+    module: str
+    subtopics: List[str]
+    concepts: List[str]
+
+class ExtractedSkill(BaseModel):
+    skill: str
+    type: Literal["core", "suggested"]
+
+class ModuleControl(BaseModel):
+    module: str
+    selected: bool
+    suggested: bool
+
+class QuestionDistributionOutput(BaseModel):
+    MCQ: int
+    Coding: int
+    CaseBased: int
+
+class ModuleCoverageItem(BaseModel):
+    module: str
+    coverage_percent: str
+
+class SkillMappingItem(BaseModel):
+    skill: str
+    weight: float
+
+class GeneratedQuestionV2(BaseModel):
+    id: str
+    type: Literal["MCQ", "Coding", "CaseBased"]
+    module: str
+    skills_tested: List[str]
+    difficulty: Literal["Easy", "Medium", "Hard"]
+    question: str
+    options: Optional[List[str]] = None
+    answer: str
+    explanation: str
+    tags: List[str]
+
+class QuestionControlItem(BaseModel):
+    question_id: str
+    actions: List[str]
+
+class CurriculumAssessmentOutput(BaseModel):
+    curriculum_structure: List[CurriculumModule]
+    skills: List[ExtractedSkill]
+    modules_control: List[ModuleControl]
+    question_distribution: QuestionDistributionOutput
+    module_coverage: List[ModuleCoverageItem]
+    skill_mapping: List[SkillMappingItem]
+    questions: List[GeneratedQuestionV2]
+    question_controls: List[QuestionControlItem]
+
+@router.post("/generate-from-curriculum", response_model=CurriculumAssessmentOutput)
+async def generate_from_curriculum(request: V2CurriculumInput):
+    logger.info(f"Generating 10-step curriculum assessment for: {request.course_name}")
+    
+    prompt = f"""
+    You are an Assessment Intelligence Engine designed to generate structured, curriculum-aligned assessments for educators and trainers.
+
+    Your task is to transform raw curriculum input into a fully customizable, skill-aligned assessment framework and question set.
+
+    -----------------------------------
+    INPUT
+    -----------------------------------
+    Curriculum Course Name: {request.course_name}
+    Modules: {', '.join(request.modules)}
+    Preferred Skills: {', '.join(request.preferred_skills)}
+    Constraints: {request.constraints}
+
+    -----------------------------------
+    STEP 1: CURRICULUM UNDERSTANDING
+    -----------------------------------
+    - Parse the curriculum into:
+      - Modules (topics/units)
+      - Subtopics (if applicable)
+      - Key concepts
+    - Extract implicit and explicit skills from the curriculum
+
+    -----------------------------------
+    STEP 2: SKILL EXTRACTION & ENRICHMENT
+    -----------------------------------
+    - Identify core skills from curriculum
+    - Add missing but relevant skills (LLM-driven enrichment)
+    - Allow extensibility (skills should be add/remove capable)
+
+    -----------------------------------
+    STEP 3: MODULE CONTROL LAYER
+    -----------------------------------
+    - Ensure ALL modules are included by default
+    - Provide:
+      - Ability to add/remove modules
+      - Suggest additional modules if gaps detected
+
+    -----------------------------------
+    STEP 4: ASSESSMENT CONFIGURATION
+    -----------------------------------
+    Generate a configurable assessment structure:
+    1. Question Types: MCQ, Coding, Case-based
+    2. Allow Custom number of questions per type and adjustable difficulty.
+
+    -----------------------------------
+    STEP 5: COVERAGE PLANNING
+    -----------------------------------
+    - Distribute questions across modules.
+    - No module is ignored.
+
+    -----------------------------------
+    STEP 6: SKILL MAPPING LOGIC
+    -----------------------------------
+    Map skills dynamically to Problem-solving, Complexity, Conceptual understanding.
+
+    -----------------------------------
+    STEP 7: QUESTION GENERATION
+    -----------------------------------
+    Generate questions aligned with Modules, Skills, Coverage %, Difficulty.
+    Always provide ID. ID should be unique.
+    Options list must only be provided for MCQ.
+
+    -----------------------------------
+    STEP 8: QUESTION CONTROL SYSTEM
+    -----------------------------------
+    Each question must support: edit, accept, reject, regenerate
+
+    -----------------------------------
+    STEP 9: VALIDATION LAYER
+    -----------------------------------
+    Ensure consistency, coverage, and proper skill distribution. No redundancy.
+
+    -----------------------------------
+    STEP 10: PERFORMANCE & GAP READINESS
+    -----------------------------------
+    Structure output to support future analytics tying questions to module/skill/diff.
+
+    -----------------------------------
+    FINAL OUTPUT FORMAT
+    -----------------------------------
+    Return the output STRICTLY matching the JSON response_schema.
+    """
+
+    messages = [
+        {"role": "system", "content": "You are the Assessment Intelligence Engine. Generate highly detailed output mapping raw curriculum to an evaluation suite."},
+        {"role": "user", "content": prompt}
+    ]
+
+    try:
+        raw_result = await run_llm_with_openai(
+            model="gpt-4o",
+            messages=messages,
+            response_model=CurriculumAssessmentOutput,
+            max_output_tokens=10000,
+            api_mode="chat_completions"
+        )
+        return raw_result
+    except Exception as e:
+        logger.error(f"10-Step Curriculum Assessment generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Curriculum Engine Error: {str(e)}")

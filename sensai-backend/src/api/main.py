@@ -27,7 +27,9 @@ from api.routes import (
     scorecard,
     integration,
     assessment,
+    assessment_engine_v3,
 )
+from api.db.migration import run_migrations
 
 # from api.routes.ai import (
 #     resume_pending_task_generation_jobs,
@@ -44,6 +46,7 @@ async def lifespan(app: FastAPI):
     # Initialize comprehensive logging as the very first step
     logger.info("Starting application")
 
+    await run_migrations()
     scheduler.start()
 
     # Create the uploads directory if it doesn't exist
@@ -136,6 +139,7 @@ app.include_router(hva.router, prefix="/hva", tags=["hva"])
 app.include_router(websocket_router, prefix="/ws", tags=["websockets"])
 app.include_router(integration.router, prefix="/integrations", tags=["integrations"])
 app.include_router(assessment.router, prefix="/assessments", tags=["assessments"])
+app.include_router(assessment_engine_v3.router, prefix="/assessments_v3", tags=["assessments_v3"])
 
 
 @app.exception_handler(Exception)

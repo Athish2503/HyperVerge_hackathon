@@ -27,6 +27,7 @@ from api.config import (
     code_drafts_table_name,
     integrations_table_name,
     assignment_table_name,
+    assessment_v3_drafts_table_name,
 )
 
 
@@ -231,5 +232,30 @@ async def cleanup_invalid_chat_history():
         await conn.commit()
 
 
+async def create_assessment_v3_drafts_table():
+    """Migration: Create the assessment_v3_drafts table."""
+    async with get_new_db_connection() as conn:
+        cursor = await conn.cursor()
+        
+        await cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {assessment_v3_drafts_table_name} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                curriculum_text TEXT,
+                modules TEXT,
+                skills TEXT,
+                config TEXT,
+                questions TEXT,
+                current_step INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                deleted_at DATETIME
+            )
+        """)
+        
+        await conn.commit()
+
+
 async def run_migrations():
     await cleanup_invalid_chat_history()
+    await create_assessment_v3_drafts_table()
