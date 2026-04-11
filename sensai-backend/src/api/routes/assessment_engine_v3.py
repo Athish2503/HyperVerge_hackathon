@@ -26,7 +26,10 @@ def clean_text(text: str) -> str:
         text = text.replace(k, v)
     # Aggressively remove non-latin1 characters
     return text.encode('latin-1', 'replace').decode('latin-1').replace('?', ' ')
-from api.prompts.assessment_prompts import JD_PARSER_PROMPT, CURRICULUM_PARSER_PROMPT, JD_GENERATOR_PROMPT, COVERAGE_REPORT_PROMPT
+from api.prompts.assessment_prompts import (
+    JD_PARSER_PROMPT, CURRICULUM_PARSER_PROMPT, JD_GENERATOR_PROMPT,
+    COVERAGE_REPORT_PROMPT, ATOMIC_GENERATION_PROMPT, DIFFICULTY_DEFINITIONS
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,12 +172,22 @@ async def parse_jd(request: ParseJDRequest):
 
 
 # --- PHASE 2: Generate Questions Models ---
+class TopicConfigInput(BaseModel):
+    MCQ: int = 0
+    SAQ: int = 0
+    Coding: int = 0
+    CaseBased: int = 0
+    Easy: int = 0
+    Medium: int = 0
+    Hard: int = 0
+
 class GenerateQuestionsRequest(BaseModel):
     modules: List[str]
     skills: List[str]
     question_types: Dict[str, int]
-    module_coverage: Dict[str, float]
-    skill_mapping: Dict[str, float]
+    topic_configs: Optional[Dict[str, TopicConfigInput]] = None
+    module_coverage: Optional[Dict[str, float]] = None
+    skill_mapping: Optional[Dict[str, float]] = None
     generation_mode: Literal["curriculum", "jd"] = "curriculum"
     difficulty: Literal["Easy", "Medium", "Hard"] = "Medium"
     include_aptitude: bool = False
@@ -200,92 +213,273 @@ class GenerateQuestionsResponse(BaseModel):
     questions: List[GeneratedQuestion]
     coverage_report: List[AssessmentSkillCoverage] = []
 
+# ---------------------------------------------------------------------------
+# Question Matrix Architecture
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+from typing import Tuple
+import asyncio
+
+@dataclass
+class MatrixRow:
+    topic: str
+    subtopic: Optional[str]
+    skill: str
+    question_type: str   # MCQ | SAQ | Coding | CaseBased
+    difficulty: str      # Easy | Medium | Hard
+    count: int
+
+
+def _distribute(total: int, weights: Dict[str, float]) -> Dict[str, int]:
+    """Distribute `total` across keys by weight, no rounding loss."""
+    if not weights or total == 0:
+        return {}
+    keys = list(weights.keys())
+    raw = {k: total * (weights[k] / 100.0) for k in keys}
+    floored = {k: int(v) for k, v in raw.items()}
+    remainder = total - sum(floored.values())
+    # Give remainder to keys with largest fractional parts
+    by_frac = sorted(keys, key=lambda k: -(raw[k] - floored[k]))
+    for k in by_frac[:remainder]:
+        floored[k] += 1
+    return floored
+
+
+DIFFICULTY_SPLIT = {"Easy": 33, "Medium": 34, "Hard": 33}  # default even split
+
+DIFFICULTY_PRESETS: Dict[str, Dict[str, int]] = {
+    "Easy":   {"Easy": 60, "Medium": 30, "Hard": 10},
+    "Medium": {"Easy": 30, "Medium": 50, "Hard": 20},
+    "Hard":   {"Easy": 10, "Medium": 40, "Hard": 50},
+}
+
+
+def build_question_matrix_from_topic_configs(
+    topic_configs: Dict[str, "TopicConfigInput"],
+    skills: List[str],
+) -> List[MatrixRow]:
+    """Build matrix directly from per-topic configs (new flow)."""
+    skill_cycle = skills if skills else ["General"]
+    matrix: List[MatrixRow] = []
+
+    for topic_idx, (topic, tc) in enumerate(topic_configs.items()):
+        skill = skill_cycle[topic_idx % len(skill_cycle)]
+        type_counts = {"MCQ": tc.MCQ, "SAQ": tc.SAQ, "Coding": tc.Coding, "CaseBased": tc.CaseBased}
+        total_diff = tc.Easy + tc.Medium + tc.Hard
+        if total_diff == 0:
+            continue
+        diff_weights = {"Easy": tc.Easy, "Medium": tc.Medium, "Hard": tc.Hard}
+
+        for qtype, qt_count in type_counts.items():
+            if qt_count <= 0:
+                continue
+            # Distribute this type's count across difficulty using per-topic weights
+            diff_w_pct = {k: (v / total_diff) * 100 for k, v in diff_weights.items()}
+            diff_counts = _distribute(qt_count, diff_w_pct)
+            for diff_level, d_count in diff_counts.items():
+                if d_count <= 0:
+                    continue
+                matrix.append(MatrixRow(
+                    topic=topic,
+                    subtopic=None,
+                    skill=skill,
+                    question_type=qtype,
+                    difficulty=diff_level,
+                    count=d_count,
+                ))
+    return matrix
+
+
+def build_question_matrix(
+    modules: List[str],
+    skills: List[str],
+    question_types: Dict[str, int],
+    module_coverage: Dict[str, float],
+    difficulty: str,
+) -> List[MatrixRow]:
+    """Legacy: Expand user config into atomic (topic × type × difficulty) rows."""
+    total_q = sum(question_types.values())
+    if total_q == 0:
+        raise ValueError("Total question count must be > 0")
+    active_modules = [m for m in modules if module_coverage.get(m, 0) > 0]
+    if not active_modules:
+        raise ValueError("No modules with non-zero coverage")
+
+    diff_weights = DIFFICULTY_PRESETS.get(difficulty, DIFFICULTY_SPLIT)
+    skill_cycle = skills if skills else ["General"]
+
+    topic_counts = _distribute(total_q, {m: module_coverage.get(m, 0) for m in active_modules})
+
+    matrix: List[MatrixRow] = []
+    for topic_idx, topic in enumerate(active_modules):
+        t_total = topic_counts.get(topic, 0)
+        if t_total == 0:
+            continue
+        skill = skill_cycle[topic_idx % len(skill_cycle)]
+
+        active_types = {qt: cnt for qt, cnt in question_types.items() if cnt > 0}
+        type_weights = {qt: (cnt / total_q) * 100 for qt, cnt in active_types.items()}
+        type_counts = _distribute(t_total, type_weights)
+
+        for qtype, qt_count in type_counts.items():
+            if qt_count == 0:
+                continue
+
+            diff_counts = _distribute(qt_count, diff_weights)
+            for diff_level, d_count in diff_counts.items():
+                if d_count == 0:
+                    continue
+                matrix.append(MatrixRow(
+                    topic=topic,
+                    subtopic=None,
+                    skill=skill,
+                    question_type=qtype,
+                    difficulty=diff_level,
+                    count=d_count,
+                ))
+    return matrix
+
+
+def _validate_matrix_config(
+    modules: List[str],
+    question_types: Dict[str, int],
+    module_coverage: Dict[str, float],
+) -> None:
+    total_q = sum(question_types.values())
+    if total_q == 0:
+        raise HTTPException(status_code=400, detail="Total question count must be > 0")
+    coverage_sum = sum(module_coverage.get(m, 0) for m in modules)
+    if coverage_sum == 0:
+        raise HTTPException(status_code=400, detail="Module coverage weights sum to zero")
+    zero_weight_with_questions = [
+        m for m in modules if module_coverage.get(m, 0) == 0
+    ]
+    if len(zero_weight_with_questions) == len(modules):
+        raise HTTPException(status_code=400, detail="All modules have zero coverage weight")
+
+
+def _normalize_question(q: GeneratedQuestion) -> GeneratedQuestion:
+    """Enforce MCQ/non-MCQ option rules."""
+    if q.type == "MCQ":
+        if not q.options or len(q.options) < 2:
+            return None
+        if q.answer not in q.options:
+            q.options[min(3, len(q.options) - 1)] = q.answer
+        q.options = list(dict.fromkeys(q.options))
+        while len(q.options) < 4:
+            q.options.append(f"None of the above {len(q.options)}")
+    else:
+        q.options = None
+    return q
+
+
+async def _generate_for_row(
+    row: MatrixRow,
+    mode: str,
+    id_offset: int,
+) -> List[GeneratedQuestion]:
+    """Single atomic LLM call for one matrix row."""
+    diff_def = DIFFICULTY_DEFINITIONS.get(row.question_type, {}).get(row.difficulty, "")
+    prompt = ATOMIC_GENERATION_PROMPT.format(
+        mode=mode,
+        topic=row.topic,
+        subtopic=row.subtopic or "N/A",
+        skill=row.skill,
+        question_type=row.question_type,
+        difficulty=row.difficulty,
+        difficulty_definition=diff_def,
+        count=row.count,
+        id_offset=id_offset,
+    )
+
+    class _RowResponse(BaseModel):
+        questions: List[GeneratedQuestion]
+
+    try:
+        result = await run_llm_with_openai(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a precise Assessment Question Generator. Follow all constraints exactly."},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=_RowResponse,
+            max_output_tokens=2000,
+        )
+        return result.questions[:row.count]  # hard cap to declared count
+    except Exception as e:
+        logger.error(f"Atomic generation failed for row {row}: {e}")
+        return []
+
+
+async def _run_matrix_generation(
+    matrix: List[MatrixRow],
+    mode: str,
+) -> List[GeneratedQuestion]:
+    """Iterate matrix rows sequentially, aggregate results."""
+    all_questions: List[GeneratedQuestion] = []
+    id_counter = 1
+    for row in matrix:
+        questions = await _generate_for_row(row, mode, id_counter)
+        for q in questions:
+            q.id = str(id_counter)
+            normalized = _normalize_question(q)
+            if normalized:
+                all_questions.append(normalized)
+                id_counter += 1
+    return all_questions
+
+
 @router.post("/generate-questions", response_model=GenerateQuestionsResponse)
 async def generate_questions(request: GenerateQuestionsRequest):
-    if request.generation_mode == "jd":
-        prompt = JD_GENERATOR_PROMPT.format(
-            role_context="Hiring Assessment",
-            modules=', '.join(request.modules),
-            skills=', '.join(request.skills),
-            module_coverage=request.module_coverage,
-            difficulty=request.difficulty,
-            include_aptitude=request.include_aptitude,
-            question_types=request.question_types,
-            jd_text=request.context_text or "No context provided"
-        )
-        system_content = "You are a precise Recruitment Assessment Specialist."
-    else:
-        prompt = f"""
-        Generate assessment questions based on the following exact configuration:
-
-        Modules selected: {', '.join(request.modules)}
-        Module Coverages required: {request.module_coverage}
-        Skills selected: {', '.join(request.skills)}
-        Difficulty: {','.request.difficulty  }
-        Cognitive Mapping required: {request.skill_mapping}
-        Question Distribution: {request.question_types}
-
-        Instructions:
-        - Strictly output the requested number of questions for each type.
-        - Questions must distribute according to the module coverage % and cognitive mapping % roughly.
-        - Each MCQ must have exactly 4 options. Options field is REQUIRED for MCQ type.
-        - Coding questions should have a specific prompt. Options field MUST be empty for Coding.
-        - CaseBased questions should have a specific scenario. Options field MUST be empty for CaseBased.
-        - Make sure the IDs are sequential integers as strings (e.g. '1', '2').
-        """
-        system_content = "You are a precise Assessment Generator."
-
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": prompt}
-    ]
+    # --- Build matrix ---
     try:
-        data = await run_llm_with_openai(
-            model="gpt-4o",
-            messages=messages,
-            response_model=GenerateQuestionsResponse,
-            max_output_tokens=6000
-        )
-        
-        # Calculate coverage report if LLM didn't (or to be precise)
-        if not data.coverage_report:
-            skill_counts = {}
-            total_tags = 0
-            for q in data.questions:
-                for skill in q.skills_tested:
-                    skill_counts[skill] = skill_counts.get(skill, 0) + 1
-                    total_tags += 1
-            
-            if total_tags > 0:
-                data.coverage_report = [
-                    AssessmentSkillCoverage(skill_name=name, coverage_percentage=round((count / total_tags) * 100, 1))
-                    for name, count in skill_counts.items()
-                ]
-        
-        # Hallucination Validator
-        validated_questions = []
-        for q in data.questions:
-            if q.type == "MCQ":
-                # Ensure options exist and answer is in options
-                if not q.options or len(q.options) < 2:
-                    continue # skip or fix
-                if q.answer not in q.options:
-                    # Quick fix: replace last option with answer if answer isn't there
-                    q.options[min(3, len(q.options)-1)] = q.answer
-                # Ensure options are unique
-                q.options = list(dict.fromkeys(q.options))
-                # Fill back to 4 if needed
-                while len(q.options) < 4:
-                    q.options.append(f"None of the above {len(q.options)}")
-            else:
-                # For SAQ, Coding, CaseBased - ensure options are null/empty
-                q.options = None
-            validated_questions.append(q)
-            
-        return GenerateQuestionsResponse(questions=validated_questions)
+        if request.topic_configs:
+            # New per-topic flow: build matrix directly from topic_configs
+            matrix = build_question_matrix_from_topic_configs(
+                topic_configs=request.topic_configs,
+                skills=request.skills,
+            )
+            if not matrix:
+                raise ValueError("No questions configured across topics")
+        elif request.module_coverage:
+            # Legacy flow with global coverage weights
+            _validate_matrix_config(request.modules, request.question_types, request.module_coverage)
+            matrix = build_question_matrix(
+                modules=request.modules,
+                skills=request.skills,
+                question_types=request.question_types,
+                module_coverage=request.module_coverage,
+                difficulty=request.difficulty,
+            )
+        else:
+            raise ValueError("Either topic_configs or module_coverage must be provided")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    logger.info(f"Question matrix built: {len(matrix)} rows, mode={request.generation_mode}")
+
+    # --- Atomic generation ---
+    mode_label = "Hiring Assessment" if request.generation_mode == "jd" else "Curriculum Assessment"
+    try:
+        questions = await _run_matrix_generation(matrix, mode_label)
     except Exception as e:
-        logger.error(f"Generate questions Error: {str(e)}")
+        logger.error(f"Matrix generation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    # --- Coverage report ---
+    skill_counts: Dict[str, int] = {}
+    total_tags = 0
+    for q in questions:
+        for skill in q.skills_tested:
+            skill_counts[skill] = skill_counts.get(skill, 0) + 1
+            total_tags += 1
+    coverage_report = [
+        AssessmentSkillCoverage(skill_name=name, coverage_percentage=round((count / total_tags) * 100, 1))
+        for name, count in skill_counts.items()
+    ] if total_tags > 0 else []
+
+    return GenerateQuestionsResponse(questions=questions, coverage_report=coverage_report)
 
 # --- PHASE 2.5: Validation and Addition ---
 class ValidateInputRequest(BaseModel):
@@ -422,103 +616,124 @@ class ExportPDFRequest(BaseModel):
 async def export_pdf(request: ExportPDFRequest):
     try:
         pdf = FPDF(orientation='P', unit='mm', format='A4')
-        # A4 width = 210mm; with 15mm margins each side, usable width = 180mm
+        # A4 dimensions: 210mm x 297mm
+        # Margins: 15mm left/right, 20mm top/bottom
+        pdf.set_margins(left=15, top=20, right=15)
         pdf.set_auto_page_break(auto=True, margin=20)
         pdf.add_page()
-        pdf.set_left_margin(15)
-        pdf.set_right_margin(15)
-        pdf.set_top_margin(15)
         
-        # Effective width
-        eff_w = pdf.w - pdf.l_margin - pdf.r_margin  # ~180mm
+        # Effective width for content
+        eff_w = 180  # 210 - 15 - 15 = 180mm
 
         # Title
-        pdf.set_font("Helvetica", "B", 18)
+        pdf.set_font("Helvetica", "B", 16)
         title_text = clean_text(request.title or "Assessment")
-        pdf.cell(eff_w, 12, title_text, ln=True, align="C")
-        pdf.ln(6)
+        pdf.cell(eff_w, 10, title_text, ln=True, align="C")
+        pdf.ln(4)
         
         pdf.set_font("Helvetica", "", 9)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(eff_w, 6, f"{len(request.questions)} Questions | Generated by Sensai AIE", ln=True, align="C")
+        pdf.cell(eff_w, 5, f"{len(request.questions)} Questions | Generated by Sensai AIE", ln=True, align="C")
         pdf.set_text_color(0, 0, 0)
-        pdf.ln(10)
+        pdf.ln(8)
 
         # Separator line
         pdf.set_draw_color(200, 200, 200)
-        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + eff_w, pdf.get_y())
-        pdf.ln(8)
+        pdf.line(15, pdf.get_y(), 195, pdf.get_y())  # Fixed coordinates
+        pdf.ln(6)
         
         for i, q in enumerate(request.questions):
+            # Check if we need a new page (leave space for at least question header + some content)
+            if pdf.get_y() > 250:  # Near bottom of page
+                pdf.add_page()
+            
             # Question number badge
             pdf.set_font("Helvetica", "B", 9)
             pdf.set_fill_color(30, 30, 30)
             pdf.set_text_color(255, 255, 255)
-            pdf.cell(12, 6, f"Q{i+1}", fill=True, ln=False)
+            pdf.cell(10, 6, f"Q{i+1}", fill=True, ln=False, align="C")
             pdf.set_text_color(0, 0, 0)
             pdf.set_fill_color(255, 255, 255)
 
             # Type + Difficulty tags
-            tag_x = pdf.get_x() + 3
+            pdf.set_x(pdf.get_x() + 2)
             pdf.set_font("Helvetica", "", 8)
             pdf.set_text_color(80, 80, 80)
             q_type = clean_text(q.type)
             q_diff = clean_text(q.difficulty)
-            pdf.cell(eff_w - 15, 6, f"  {q_type}  |  {q_diff}", ln=True)
+            pdf.cell(0, 6, f"{q_type}  |  {q_diff}", ln=True)
             pdf.set_text_color(0, 0, 0)
             pdf.ln(2)
 
             # Question text
-            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_font("Helvetica", "B", 10)
             q_text = clean_text(q.question_text)
             if q_text:
-                pdf.multi_cell(eff_w, 7, q_text)
-            pdf.ln(3)
+                pdf.multi_cell(eff_w, 6, q_text)
+            pdf.ln(2)
             
             # Options (MCQ)
             if q.options:
-                pdf.set_font("Helvetica", "", 10)
+                pdf.set_font("Helvetica", "", 9)
                 for j, opt in enumerate(q.options):
-                    opt_text = clean_text(f"{chr(65+j)})  {opt}")
+                    opt_text = clean_text(opt)
                     is_correct = clean_text(opt) == clean_text(q.answer)
+                    
+                    # Check page break before each option
+                    if pdf.get_y() > 270:
+                        pdf.add_page()
+                    
                     if is_correct:
                         pdf.set_text_color(0, 120, 60)
-                        pdf.set_font("Helvetica", "B", 10)
+                        pdf.set_font("Helvetica", "B", 9)
                     else:
                         pdf.set_text_color(60, 60, 60)
-                        pdf.set_font("Helvetica", "", 10)
+                        pdf.set_font("Helvetica", "", 9)
+                    
                     if opt_text.strip():
-                        pdf.multi_cell(eff_w, 6, f"   {opt_text}")
+                        # Use cell for option letter, then multi_cell for text
+                        pdf.cell(8, 5, f"{chr(65+j)})", ln=False)
+                        x_pos = pdf.get_x()
+                        y_pos = pdf.get_y()
+                        pdf.multi_cell(eff_w - 8, 5, opt_text)
+                        
                 pdf.set_text_color(0, 0, 0)
-                pdf.ln(2)
+                pdf.ln(1)
 
             # Answer section (for non-MCQ)
             if not q.options or len(q.options) == 0:
+                if pdf.get_y() > 260:
+                    pdf.add_page()
+                    
                 pdf.set_font("Helvetica", "B", 9)
                 pdf.set_text_color(0, 100, 60)
-                pdf.cell(eff_w, 6, "Answer / Rubric:", ln=True)
+                pdf.cell(eff_w, 5, "Answer / Rubric:", ln=True)
                 pdf.set_font("Helvetica", "", 9)
                 pdf.set_text_color(40, 40, 40)
                 ans_text = clean_text(q.answer)
                 if ans_text.strip():
                     pdf.multi_cell(eff_w, 5, ans_text)
                 pdf.set_text_color(0, 0, 0)
-                pdf.ln(2)
+                pdf.ln(1)
 
             # Explanation
             if q.explanation:
-                pdf.set_font("Helvetica", "I", 9)
+                if pdf.get_y() > 260:
+                    pdf.add_page()
+                    
+                pdf.set_font("Helvetica", "I", 8)
                 pdf.set_text_color(100, 100, 100)
                 exp_text = clean_text(f"Explanation: {q.explanation}")
                 if exp_text.strip():
-                    pdf.multi_cell(eff_w, 5, exp_text)
+                    pdf.multi_cell(eff_w, 4, exp_text)
                 pdf.set_text_color(0, 0, 0)
 
-            pdf.ln(5)
+            pdf.ln(4)
             # Divider between questions
-            pdf.set_draw_color(230, 230, 230)
-            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + eff_w, pdf.get_y())
-            pdf.ln(6)
+            if pdf.get_y() < 270:  # Only add divider if not near page break
+                pdf.set_draw_color(230, 230, 230)
+                pdf.line(15, pdf.get_y(), 195, pdf.get_y())
+                pdf.ln(4)
             
         pdf_content = pdf.output()
         

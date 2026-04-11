@@ -8,7 +8,7 @@ import { signOut, useSession } from "next-auth/react";
 import { useSchools } from "@/lib/api";
 import CreateCourseDialog from "@/components/CreateCourseDialog";
 import SchoolPickerDialog from "@/components/SchoolPickerDialog";
-import { ChevronDown, Plus, X, Book, School } from "lucide-react";
+import { ChevronDown, Plus, X, Book, School, FileText } from "lucide-react";
 import { Cohort } from "@/types";
 import { useThemePreference } from "@/lib/hooks/useThemePreference";
 
@@ -194,6 +194,15 @@ export function Header({
                                 Try a demo
                             </button>
                         )}
+                    
+                    {/* My Assessments Button */}
+                    <Link href="/my-assessments">
+                        <button className="hidden md:flex items-center gap-2 px-5 py-3 text-sm font-medium rounded-full cursor-pointer bg-gray-100 dark:bg-[#222222] text-black dark:text-white hover:bg-gray-200 dark:hover:bg-[#2A2A2A] transition-colors border border-gray-200 dark:border-[#333333] shadow-sm">
+                            <FileText className="w-4 h-4" />
+                            My Assessments
+                        </button>
+                    </Link>
+
                     {/* Generate Assessment Dropdown */}
                     <div className="relative group hidden md:block">
                         <button className="px-6 py-3 text-sm font-medium rounded-full cursor-pointer bg-blue-600 text-white hover:bg-blue-700 transition-colors focus:outline-none flex items-center gap-2 shadow-sm">
@@ -361,6 +370,20 @@ export function Header({
                                         </button>
                                     </div>
                                 )}
+
+                                {/* My Assessments Button */}
+                                <div className="flex items-center gap-3">
+                                    <span className="bg-black text-white py-2 px-4 rounded-full text-sm shadow-md">
+                                        My Assessments
+                                    </span>
+                                    <button
+                                        onClick={() => { router.push('/my-assessments'); setMobileActionsOpen(false); }}
+                                        className="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center shadow-md cursor-pointer"
+                                        aria-label="My Assessments"
+                                    >
+                                        <FileText className="h-6 w-6" />
+                                    </button>
+                                </div>
 
                                 {/* Go To School Button - only shown if hasOwnedSchool is true */}
                                 {hasOwnedSchool ? (

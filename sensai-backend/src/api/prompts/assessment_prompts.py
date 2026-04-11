@@ -76,6 +76,57 @@ JD CONTEXT:
 {jd_text}
 """
 
+# Difficulty definitions injected into every atomic generation call
+DIFFICULTY_DEFINITIONS = {
+    "MCQ": {
+        "Easy": "Direct recall of a single fact or definition.",
+        "Medium": "Application of a concept to a realistic scenario.",
+        "Hard": "Edge cases, tricky distractors, or requires eliminating near-correct options."
+    },
+    "SAQ": {
+        "Easy": "Explain a concept in plain terms.",
+        "Medium": "Compare, contrast, or apply a concept to a given situation.",
+        "Hard": "Analyse trade-offs, justify a design decision, or diagnose a subtle problem."
+    },
+    "Coding": {
+        "Easy": "Implement a single well-defined function using one concept.",
+        "Medium": "Multi-step logic requiring composition of two or more concepts.",
+        "Hard": "Optimisation under constraints, edge-case handling, or algorithmic complexity."
+    },
+    "CaseBased": {
+        "Easy": "Identify the correct approach for a straightforward scenario.",
+        "Medium": "Evaluate options and recommend a solution with justification.",
+        "Hard": "Diagnose a complex, ambiguous situation and propose a defensible strategy."
+    }
+}
+
+ATOMIC_GENERATION_PROMPT = """
+You are a precise Assessment Question Generator.
+
+CONTEXT
+- Mode: {mode}
+- Topic: {topic}
+- Subtopic: {subtopic}
+- Skill: {skill}
+- Question Type: {question_type}
+- Difficulty: {difficulty}
+- Difficulty Definition: {difficulty_definition}
+
+INSTRUCTION
+Generate EXACTLY {count} question(s) of type {question_type} at {difficulty} difficulty.
+Do not exceed or reduce this count.
+Every question MUST be tightly scoped to the topic, subtopic, and skill above.
+Do NOT infer additional topics or change the question type.
+
+FOR MCQ: provide exactly 4 options; the answer must be one of the options.
+FOR SAQ/CaseBased: options must be null/empty.
+FOR Coding: provide a clear problem statement; options must be null/empty.
+
+Assign sequential string IDs starting from {id_offset}.
+Set the `module` field to "{topic}".
+Set `difficulty` to "{difficulty}".
+"""
+
 COVERAGE_REPORT_PROMPT = """
 Analyze the generated questions and provide a skill coverage report.
 For each skill/capability requested, determine the percentage of the assessment total weight dedicated to it.
