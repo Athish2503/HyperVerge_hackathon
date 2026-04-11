@@ -320,11 +320,22 @@ export default function MyAssessmentsPage() {
     setEditingQIdx(-1);
   };
 
-  const filteredAssessments = assessments.filter(a => {
-    const matchesSearch = a.title.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesFilter = filter === "all" || (filter === "published" ? a.type === "published" : a.type === "draft");
-    return matchesSearch && matchesFilter;
-  });
+  const filteredAssessments = assessments
+    .filter(a => {
+      const matchesSearch = a.title.toLowerCase().includes(searchQuery.toLowerCase());
+      let matchesFilter = false;
+      
+      if (filter === "all") {
+        matchesFilter = true;
+      } else if (filter === "published") {
+        matchesFilter = a.type === "published" && a.status === "published";
+      } else if (filter === "draft") {
+        matchesFilter = a.type === "draft";
+      }
+      
+      return matchesSearch && matchesFilter;
+    })
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
   const formatDate = (dateStr: string) => {
     try { return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
