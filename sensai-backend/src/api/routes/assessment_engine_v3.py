@@ -1139,3 +1139,97 @@ async def get_test_for_taking(share_token: str):
     except Exception as e:
         logger.error(f"Take test error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- PHASE 9: Student Submission ---
+class SubmitAssessmentRequest(BaseModel):
+    answers: Dict[str, str]  # question_id -> answer
+
+class QuestionResult(BaseModel):
+    id: str
+    question_text: str
+    type: str
+    module: str
+    difficulty: str
+    options: Optional[List[str]] = None
+    user_answer: Optional[str] = None
+    correct_answer: str
+    is_correct: bool
+    explanation: str
+
+class SubmitAssessmentResponse(BaseModel):
+    score: int
+    total: int
+    percentage: float
+    results: List[QuestionResult]
+
+@router.post("/submit/{share_token}", response_model=SubmitAssessmentResponse)
+async def submit_assessment(share_token: str, request: SubmitAssessmentRequest):
+    """Submit student answers and get results with correct answers."""
+    import json
+    from api.utils.db import execute_db_operation
+    from api.config import assessment_v3_published_table_name
+    try:
+        query = f"""
+            SELECT id, title, config, questions, course_id, status
+            FROM {assessment_v3_published_table_name}
+            WHERE share_token = ? AND deleted_at IS NULL
+        """
+        row = await execute_db_operation(query, (share_token,), fetch_one=True)
+        if not row:
+            raise HTTPException(status_code=404, detail="Test not found or link is invalid")
+        
+        status = row[5]
+        if status != "published" and not row[4]:
+            raise HTTPException(status_code=403, detail="This test is not currently accepting responses")
+            
+        questions = json.loads(row[3]) if row[3] else []
+        
+        # Calculate score and build results
+        score = 0
+        results = []
+        
+        for q in questions:
+            user_answer = request.answers.get(q.get("id", ""))
+            correct_answer = q.get("answer", "")
+            
+            # Check if answer is correct
+            is_correct = False
+            if user_answer and correct_answer:
+                # For MCQ, exact match
+                if q.get("type") == "MCQ":
+                    is_correct = user_answer.strip() == correct_answer.strip()
+                else:
+                    # For text answers, case-insensitive comparison
+                    is_correct = user_answer.strip().lower() == correct_answer.strip().lower()
+            
+            if is_correct:
+                score += 1
+            
+            results.append(QuestionResult(
+                id=q.get("id", ""),
+                question_text=q.get("question_text", ""),
+                type=q.get("type", ""),
+                module=q.get("module", ""),
+                difficulty=q.get("difficulty", "Medium"),
+                options=q.get("options"),
+                user_answer=user_answer,
+                correct_answer=correct_answer,
+                is_correct=is_correct,
+                explanation=q.get("explanation", "")
+            ))
+        
+        total = len(questions)
+        percentage = round((score / total * 100), 2) if total > 0 else 0
+        
+        return SubmitAssessmentResponse(
+            score=score,
+            total=total,
+            percentage=percentage,
+            results=results
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Submit assessment error: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Failed to submit assessment")

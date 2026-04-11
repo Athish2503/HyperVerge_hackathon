@@ -131,7 +131,7 @@ export default function StandaloneAssessmentPreview({ params }: { params: { id: 
             {isToggling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (
               isPublished ? <EyeOff className="w-3.5 h-3.5" /> : <Globe className="w-3.5 h-3.5" />
             )}
-            {isPublished ? "Unpublish Test" : "Publish Test"}
+            {isPublished ? "Unpublish Assessment" : "Publish Assessment"}
           </button>
         </div>
       </header>
