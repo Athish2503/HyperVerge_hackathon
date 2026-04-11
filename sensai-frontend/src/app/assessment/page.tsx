@@ -6,7 +6,8 @@ import {
   Loader2, Plus, Trash2, CheckCircle, XCircle, LayoutDashboard, Layers, 
   PieChart, BookOpen, BrainCircuit, FileText, ChevronRight, Upload, 
   RefreshCw, Save, Download, AlertTriangle, Edit3, Sparkles, Eye, ExternalLink,
-  MessageSquare, Send, AlertCircle, Building, Target, ArrowUpRight, ArrowRight
+  MessageSquare, Send, AlertCircle, Building, Target, ArrowUpRight, ArrowRight,
+  RotateCcw
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Header } from "@/components/layout/header";
@@ -30,90 +31,124 @@ interface SkillCoverage {
   coverage_percentage: number;
 }
 
-function normalizePercentages(
+function calculateInitialWeightages(items: { name: string, importance: "HIGH" | "MEDIUM" | "LOW" }[]): Record<string, number> {
+  if (items.length === 0) return {};
+  
+  const scores = items.map(it => {
+    if (it.importance === "HIGH") return 10;
+    if (it.importance === "MEDIUM") return 3;
+    return 1;
+  });
+  
+  const totalScore = scores.reduce((a, b) => a + b, 0);
+  const initialMap: Record<string, number> = {};
+  
+  items.forEach((it, i) => {
+    initialMap[it.name] = Math.round((scores[i] / totalScore) * 100);
+  });
+  
+  // Balance to 100
+  const currentTotal = Object.values(initialMap).reduce((a, b) => a + b, 0);
+  if (currentTotal !== 100 && items.length > 0) {
+    // Add/subtract difference to the highest importance item
+    const sorted = [...items].sort((a, b) => {
+      const sA = a.importance === "HIGH" ? 3 : (a.importance === "MEDIUM" ? 2 : 1);
+      const sB = b.importance === "HIGH" ? 3 : (b.importance === "MEDIUM" ? 2 : 1);
+      return sB - sA;
+    });
+    initialMap[sorted[0].name] += (100 - currentTotal);
+  }
+  
+  return initialMap;
+}
+
+function normalizeWithGovernance(
   map: Record<string, number>, 
   keyChanged: string, 
   newVal: number,
-  priorityKeys: string[] = [],
-  minPrioritySum: number = 0
-): Record<string, number> {
+  baselines: Record<string, number>,
+  items: { name: string, importance: "HIGH" | "MEDIUM" | "LOW" }[]
+): { newMap: Record<string, number>, warning?: string } {
   const newMap = { ...map };
-  const isPriority = priorityKeys.includes(keyChanged);
-  const otherKeys = Object.keys(newMap).filter(k => k !== keyChanged);
+  const itemChanged = items.find(it => it.name === keyChanged);
+  const isHighPriority = itemChanged?.importance === "HIGH";
   
-  if (otherKeys.length === 0) {
-    newMap[keyChanged] = 100;
-    return newMap;
-  }
+  let warning: string | undefined;
 
-  // 1. Constraint: If changing a non-priority key, it cannot exceed (100 - minPrioritySum)
-  if (!isPriority && priorityKeys.length > 0) {
-    const maxAllowedNonPriority = 100 - minPrioritySum;
-    const currentNonPrioritySum = Object.keys(newMap)
-      .filter(k => !priorityKeys.includes(k) && k !== keyChanged)
-      .reduce((acc, k) => acc + newMap[k], 0);
-    
-    if (newVal + currentNonPrioritySum > maxAllowedNonPriority) {
-      newVal = Math.max(0, maxAllowedNonPriority - currentNonPrioritySum);
+  // Rule 2: High Priority Protection (70% threshold)
+  if (isHighPriority) {
+    const baseline = baselines[keyChanged] || 0;
+    const threshold = baseline * 0.7;
+    if (newVal < threshold) {
+      newMap[keyChanged] = Math.round(threshold);
+      return { newMap, warning: "High-priority skill weightage cannot be reduced beyond acceptable limit." };
+    } else if (newVal < baseline) {
+      warning = "You are reducing weightage of a high-priority skill. This may impact assessment quality.";
     }
   }
 
+  const delta = newVal - map[keyChanged];
   newMap[keyChanged] = newVal;
 
-  // 2. Normalization
-  const remaining = Math.max(0, 100 - newVal);
-  let otherSum = otherKeys.reduce((acc, k) => acc + map[k], 0);
-  
-  if (otherSum === 0) {
-    const split = remaining / otherKeys.length;
-    otherKeys.forEach(k => newMap[k] = Math.round(split));
-  } else {
-    otherKeys.forEach(k => {
-      newMap[k] = Math.round((map[k] / otherSum) * remaining);
-    });
+  // Rule 3: Redistribution Logic
+  const otherItems = items.filter(it => it.name !== keyChanged);
+  if (otherItems.length === 0) {
+    newMap[keyChanged] = 100;
+    return { newMap };
   }
 
-  // 3. Post-Normalization Constraint: Ensure Priority Sum >= minPrioritySum
-  const currentPrioritySum = priorityKeys.reduce((acc, k) => acc + (newMap[k] || 0), 0);
-  if (currentPrioritySum < minPrioritySum && priorityKeys.length > 0) {
-    const deficit = minPrioritySum - currentPrioritySum;
-    const otherPriorityKeys = priorityKeys.filter(k => k !== keyChanged);
+  if (delta > 0) {
+    // I increased a slider, need to REDUCE others
+    // Priority order of reduction: LOW -> MEDIUM -> HIGH
+    let amountToReduce = delta;
+    const tiers: ("LOW" | "MEDIUM" | "HIGH")[] = ["LOW", "MEDIUM", "HIGH"];
     
-    if (otherPriorityKeys.length > 0) {
-      // Distribute deficit to other priority keys
-      const pSum = otherPriorityKeys.reduce((acc, k) => acc + newMap[k], 0) || 1;
-      otherPriorityKeys.forEach(k => {
-        newMap[k] += Math.round((newMap[k] / pSum) * deficit);
+    for (const tier of tiers) {
+      if (amountToReduce <= 0) break;
+      const tierItems = otherItems.filter(it => it.importance === tier);
+      const currentTierSum = tierItems.reduce((acc, it) => acc + (newMap[it.name] || 0), 0);
+      
+      if (currentTierSum > 0) {
+        const reductionFromThisTier = Math.min(amountToReduce, currentTierSum);
+        tierItems.forEach(it => {
+          const share = (newMap[it.name] / currentTierSum) * reductionFromThisTier;
+          newMap[it.name] = Math.max(0, newMap[it.name] - Math.round(share));
+        });
+        amountToReduce -= reductionFromThisTier;
+      }
+    }
+  } else {
+    // I decreased a slider, need to INCREASE others proportionally
+    let amountToDistribute = Math.abs(delta);
+    const otherItemsSelected = otherItems.filter(it => map[it.name] !== undefined);
+    const otherSum = otherItemsSelected.reduce((acc, it) => acc + map[it.name], 0);
+    
+    if (otherSum === 0) {
+      const perItem = amountToDistribute / otherItemsSelected.length;
+      otherItemsSelected.forEach(it => newMap[it.name] = Math.round(perItem));
+    } else {
+      otherItemsSelected.forEach(it => {
+        newMap[it.name] += Math.round((map[it.name] / otherSum) * amountToDistribute);
       });
-      // Compensate non-priority keys
-      const nonPriorityKeys = otherKeys.filter(k => !priorityKeys.includes(k));
-      const npSum = nonPriorityKeys.reduce((acc, k) => acc + newMap[k], 0) || 1;
-      nonPriorityKeys.forEach(k => {
-        newMap[k] = Math.max(0, newMap[k] - Math.round((newMap[k] / npSum) * deficit));
-      });
-    } else if (isPriority) {
-      // If the changed key is the only priority key, reset it to min
-      newMap[keyChanged] = Math.max(newVal, minPrioritySum);
-      // Re-normalize others
-      const rem = 100 - newMap[keyChanged];
-      const npKeys = otherKeys;
-      const npSum = npKeys.reduce((acc, k) => acc + map[k], 0) || 1;
-      npKeys.forEach(k => newMap[k] = Math.round((map[k] / npSum) * rem));
     }
   }
-  
-  // 4. Final Balance to 100
+
+  // Final Balance to 100
   const finalSum = Object.values(newMap).reduce((a, b) => a + b, 0);
-  if (finalSum !== 100 && otherKeys.length > 0) {
-    newMap[otherKeys[0]] += (100 - finalSum);
+  if (finalSum !== 100 && otherItems.length > 0) {
+    // Find a non-zero item to adjust
+    const adjustKey = otherItems.find(it => newMap[it.name] > 0)?.name || otherItems[0].name;
+    newMap[adjustKey] += (100 - finalSum);
   }
-  return newMap;
+
+  return { newMap, warning };
 }
 
 function AssessmentContent() {
   const searchParams = useSearchParams();
   const initialMode = searchParams.get("mode") === "recruiter" ? "recruiter" : "educator";
   const [mode, setMode] = useState<"educator" | "recruiter">(initialMode);
+  const [roleLocked, setRoleLocked] = useState(false);
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Phase 1
@@ -170,6 +205,7 @@ function AssessmentContent() {
     
     // PERSISTENCE: If text hasn't changed, just move forward
     if (curriculumText === lastParsedText && modules.length > 0) {
+      setRoleLocked(true);
       setCurrentStep(2);
       return;
     }
@@ -185,10 +221,11 @@ function AssessmentContent() {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      const modArr = data.modules.map((m: any) => ({ name: m.name, selected: true, suggested: false }));
-      const sugArr = data.suggested_modules.map((m: any) => ({ name: m.name, selected: false, suggested: true, reason: m.reason }));
+      const modArr = data.modules.map((m: any) => ({ name: m.name, selected: true, suggested: false, importance: m.importance || "MEDIUM" }));
+      const sugArr = data.suggested_modules.map((m: any) => ({ name: m.name, selected: false, suggested: true, reason: m.reason, importance: m.importance || "MEDIUM" }));
       setModules([...modArr, ...sugArr]);
-      const skArr = data.skills.map((s: any) => ({ name: s.name, selected: true, type: s.type }));
+      
+      const skArr = data.skills.map((s: any) => ({ name: s.name, selected: true, type: s.type, importance: s.importance || "MEDIUM" }));
       setSkills(skArr);
       
       // Auto-detect Seniority/Difficulty for recruiters
@@ -198,8 +235,8 @@ function AssessmentContent() {
         else if (sen.includes("mid")) setDifficulty("Medium");
         else if (sen.includes("entry") || sen.includes("junior")) setDifficulty("Easy");
       }
-      setSkills(skArr);
       setLastParsedText(curriculumText);
+      setRoleLocked(true);
       setCurrentStep(2);
     } catch (e) {
       showAlert("Parse Error", "Sensai failed to analyze the content. Ensure your input is clear and descriptive.");
@@ -209,8 +246,8 @@ function AssessmentContent() {
   };
 
   // Phase 2
-  const [modules, setModules] = useState<{name: string, selected: boolean, suggested: boolean, reason?: string}[]>([]);
-  const [skills, setSkills] = useState<{name: string, selected: boolean, type: string}[]>([]);
+  const [modules, setModules] = useState<{name: string, selected: boolean, suggested: boolean, importance: "HIGH" | "MEDIUM" | "LOW", reason?: string}[]>([]);
+  const [skills, setSkills] = useState<{name: string, selected: boolean, type: string, importance: "HIGH" | "MEDIUM" | "LOW"}[]>([]);
   const [newModuleName, setNewModuleName] = useState("");
   const [newSkillName, setNewSkillName] = useState("");
   const [isValidatingAddition, setIsValidatingAddition] = useState(false);
@@ -236,7 +273,7 @@ function AssessmentContent() {
     if (!newModuleName.trim() || isValidatingAddition) return;
     const validatedName = await validateAddition(newModuleName, "module");
     if (validatedName) {
-      setModules([...modules, { name: validatedName, selected: true, suggested: false }]);
+      setModules([...modules, { name: validatedName, selected: true, suggested: false, importance: "MEDIUM" }]);
       setNewModuleName("");
     }
   };
@@ -245,12 +282,13 @@ function AssessmentContent() {
     if (!newSkillName.trim() || isValidatingAddition) return;
     const validatedName = await validateAddition(newSkillName, "skill");
     if (validatedName) {
-      setSkills([...skills, { name: validatedName, selected: true, type: "core" }]);
+      setSkills([...skills, { name: validatedName, selected: true, type: "core", importance: "MEDIUM" }]);
       setNewSkillName("");
     }
   };
 
   // Phase 3
+  const [weightageBaseline, setWeightageBaseline] = useState<Record<string, number>>({});
   const [questionTypes, setQuestionTypes] = useState({ MCQ: 15, SAQ: 5, Coding: 0, CaseBased: 1 });
   const [moduleCoverage, setModuleCoverage] = useState<Record<string, number>>({});
   const [skillMapping, setSkillMapping] = useState<Record<string, number>>({
@@ -263,42 +301,29 @@ function AssessmentContent() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [coverageReport, setCoverageReport] = useState<SkillCoverage[]>([]);
 
+  // Calculate and fix weights when entering Step 3
   useEffect(() => {
+    if (currentStep !== 3) return;
+    
     const selectedMods = modules.filter(m => m.selected);
-    // PERSISTENCE: Only initialize if coverage is empty and we are in step 3
-    if (selectedMods.length > 0 && currentStep === 3 && Object.keys(moduleCoverage).length === 0) {
-      const suggestedMods = selectedMods.filter(m => m.suggested);
-      const manualMods = selectedMods.filter(m => !m.suggested);
-      
-      const initialMap: Record<string, number> = {};
-      
-      // PRIORITY LOGIC: AI topics get 85% weight, Manual get 15% weight
-      const AI_TOTAL = suggestedMods.length > 0 ? (manualMods.length > 0 ? 85 : 100) : 0;
-      const MANUAL_TOTAL = manualMods.length > 0 ? (suggestedMods.length > 0 ? 15 : 100) : 0;
-      
-      if (suggestedMods.length > 0) {
-        const perAI = Math.floor(AI_TOTAL / suggestedMods.length);
-        suggestedMods.forEach(m => initialMap[m.name] = perAI);
-      }
-      
-      if (manualMods.length > 0) {
-        const perManual = Math.floor(MANUAL_TOTAL / manualMods.length);
-        manualMods.forEach(m => initialMap[m.name] = perManual);
-      }
-      
-      // Balance back to 100
-      const currentTotal = Object.values(initialMap).reduce((a, b) => a + b, 0);
-      if (currentTotal !== 100 && selectedMods.length > 0) {
-        initialMap[selectedMods[0].name] += (100 - currentTotal);
-      }
-      
+    if (selectedMods.length === 0) return;
+
+    // Check if the set of selected modules has changed from what we have in moduleCoverage
+    const currentKeys = Object.keys(moduleCoverage).sort();
+    const targetKeys = selectedMods.map(m => m.name).sort();
+    const keysChanged = JSON.stringify(currentKeys) !== JSON.stringify(targetKeys);
+
+    if (keysChanged || Object.keys(moduleCoverage).length === 0) {
+      const initialMap = calculateInitialWeightages(selectedMods);
       setModuleCoverage(initialMap);
+      setWeightageBaseline(initialMap); // Baseline is the AI default
     }
   }, [modules, currentStep]);
 
   const handleModuleCoverageChange = (name: string, val: number) => {
-    const priorityKeys = modules.filter(m => m.suggested && m.selected).map(m => m.name);
-    setModuleCoverage(prev => normalizePercentages(prev, name, val, priorityKeys, 50));
+    const { newMap, warning } = normalizeWithGovernance(moduleCoverage, name, val, weightageBaseline, modules);
+    setModuleCoverage(newMap);
+    if (warning) showAlert("Weightage Guardrail", warning, warning.includes("cannot") ? "error" : "warning");
   };
   
   const handleSkillMappingChange = (name: string, val: number) => {
@@ -625,26 +650,37 @@ function AssessmentContent() {
           <div>
             <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
               Create Assessment
-              <span className="text-sm font-medium px-2 py-1 bg-gray-100 dark:bg-white/10 rounded-lg text-muted-foreground uppercase tracking-widest leading-none">Smart Mode</span>
+              {/* <span className="text-sm font-medium px-2 py-1 bg-gray-100 dark:bg-white/10 rounded-lg text-muted-foreground uppercase tracking-widest leading-none">Smart Mode</span> */}
             </h1>
             <p className="text-muted-foreground mt-2 font-medium">
               {mode === "educator" ? "Build professional tests and quizzes effortlessly." : "Create role-aligned screening tests for your candidates."}
             </p>
           </div>
           
-          <div className="flex bg-gray-100 dark:bg-[#222222] rounded-xl p-1 shadow-sm border border-gray-200 dark:border-transparent">
-            <button 
-              className={`px-6 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${mode === "educator" ? "bg-white dark:bg-[#333333] text-black dark:text-white shadow-sm" : "text-muted-foreground hover:text-black dark:hover:text-white"}`}
-              onClick={() => { setMode("educator"); setCurrentStep(1); }}
-            >
-              For Teachers
-            </button>
-            <button 
-              className={`px-6 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${mode === "recruiter" ? "bg-white dark:bg-[#333333] text-black dark:text-white shadow-sm" : "text-muted-foreground hover:text-black dark:hover:text-white"}`}
-              onClick={() => setMode("recruiter")} 
-            >
-              For Hiring
-            </button>
+          <div className="flex flex-col items-end gap-2">
+            {!roleLocked ? (
+              <div className="flex bg-gray-100 dark:bg-[#222222] rounded-xl p-1 shadow-sm border border-gray-200 dark:border-transparent">
+                <button 
+                  className={`px-6 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${mode === "educator" ? "bg-white dark:bg-[#333333] text-black dark:text-white shadow-sm" : "text-muted-foreground hover:text-black dark:hover:text-white"}`}
+                  onClick={() => { setMode("educator"); setCurrentStep(1); }}
+                >
+                  Trainer
+                </button>
+                <button 
+                  className={`px-6 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${mode === "recruiter" ? "bg-white dark:bg-[#333333] text-black dark:text-white shadow-sm" : "text-muted-foreground hover:text-black dark:hover:text-white"}`}
+                  onClick={() => setMode("recruiter")} 
+                >
+                  Recruiter
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-6 py-2 bg-primary/10 border border-primary/20 rounded-full shadow-sm animate-in fade-in zoom-in duration-300">
+                <div className={`w-2 h-2 rounded-full animate-pulse ${mode === "recruiter" ? "bg-blue-500" : "bg-emerald-500"}`} />
+                <span className="text-sm font-black uppercase tracking-widest text-primary">
+                  {mode === "recruiter" ? "Recruiter" : "Trainer"} Mode
+                </span>
+              </div>
+            )}
           </div>
         </motion.div>
 
@@ -663,9 +699,18 @@ function AssessmentContent() {
                    </div>
                    <span className="text-[10px] font-bold uppercase tracking-wider">{st.label}</span>
                 </div>
-                {i < 3 && <div className={`h-px flex-1 rounded-full transition-all duration-700 ${currentStep > st.id ? "bg-emerald-500" : "bg-gray-200 dark:bg-white/10"}`} />}
+                {i < 3 && <div className={`h-[2px] flex-1 mx-2 ${currentStep > st.id + 1 ? "bg-emerald-500" : "bg-gray-100 dark:bg-white/5"}`} />}
              </React.Fragment>
            ))}
+           
+           <div className="ml-auto pl-4 border-l border-gray-200 dark:border-white/10">
+              <button 
+                onClick={handleStartOver}
+                className="flex items-center gap-2 px-4 py-2 text-muted-foreground hover:text-red-500 transition-colors text-[10px] font-black uppercase tracking-widest"
+              >
+                <RotateCcw className="w-4 h-4" /> Start from Scratch
+              </button>
+           </div>
         </div>
 
         <AnimatePresence mode="wait">
@@ -743,7 +788,14 @@ function AssessmentContent() {
                            <div className="flex-1">
                               <h4 className="font-bold text-base flex items-center gap-2">
                                 {m.name} 
-                                {m.suggested && <span className="text-[9px] uppercase bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-bold">Recommended</span>}
+                                <span className={`text-[8px] uppercase px-2 py-0.5 rounded-full font-bold ${
+                                  m.importance === "HIGH" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" :
+                                  m.importance === "MEDIUM" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400" :
+                                  "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+                                }`}>
+                                  {m.importance}
+                                </span>
+                                {m.suggested && <span className="text-[9px] uppercase bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full font-bold">Recommended</span>}
                               </h4>
                               {m.reason && <p className="text-xs text-muted-foreground mt-1 font-medium">{m.reason}</p>}
                            </div>
@@ -773,6 +825,13 @@ function AssessmentContent() {
                         key={i} className={`flex items-center gap-2 px-4 py-2 border rounded-full transition-all group ${s.selected ? 'border-primary bg-primary text-primary-foreground' : 'border-gray-100 dark:border-white/5 opacity-60 hover:opacity-100 hover:border-gray-300'}`}>
                          <input type="checkbox" checked={s.selected} onChange={() => { const n = [...skills]; n[i].selected = !n[i].selected; setSkills(n); }} className="w-3.5 h-3.5 rounded border-white/50 accent-white" />
                          <span className="text-xs font-bold uppercase tracking-tight">{s.name}</span>
+                         <span className={`text-[7px] font-black px-1.5 rounded-sm ${
+                           s.importance === "HIGH" ? "bg-red-500/20 text-red-600" :
+                           s.importance === "MEDIUM" ? "bg-amber-500/20 text-amber-600" :
+                           "bg-emerald-500/20 text-emerald-600"
+                         }`}>
+                           {s.importance[0]}
+                         </span>
                          <button onClick={() => setSkills(skills.filter((_, idx)=>idx!==i))} className="opacity-0 group-hover:opacity-100 text-current hover:opacity-100 ml-1"><XCircle className="w-3.5 h-3.5"/></button>
                       </motion.div>
                     ))}
@@ -799,9 +858,16 @@ function AssessmentContent() {
               initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
               className="bg-white dark:bg-[#1A1A1A] p-10 rounded-[32px] border border-gray-200 dark:border-[#333333] shadow-sm overflow-hidden"
             >
-               <h2 className="text-2xl font-bold flex items-center gap-3 mb-12 tracking-tight">
-                 Question Setup
-               </h2>
+               <div className="flex items-center justify-between mb-12">
+                 <h2 className="text-2xl font-bold flex items-center gap-3 tracking-tight">
+                   Question Setup
+                 </h2>
+                 <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground bg-gray-100 dark:bg-white/5 px-3 py-1 rounded-lg border border-gray-200 dark:border-white/10">
+                      Auto-Weighted by AI
+                    </span>
+                 </div>
+               </div>
                
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
                  <div className="space-y-8">
@@ -868,16 +934,21 @@ function AssessmentContent() {
                              <span className="text-[11px] font-bold uppercase text-muted-foreground truncate w-2/3">{m.name}</span>
                              <span className="text-xs font-black tabular-nums">{moduleCoverage[m.name] || 0}%</span>
                           </div>
-                          <div className="relative h-1.5 bg-gray-100 dark:bg-white/5 rounded-full overflow-hidden">
+                           <div className="relative h-1.5 bg-gray-100 dark:bg-white/5 rounded-full overflow-hidden">
                              <motion.div 
                                initial={{ width: 0 }} animate={{ width: `${moduleCoverage[m.name] || 0}%` }}
-                               className="h-full bg-black dark:bg-white rounded-full" 
+                               className={`h-full rounded-full ${
+                                 m.importance === "HIGH" ? "bg-red-500" :
+                                 m.importance === "MEDIUM" ? "bg-amber-500" :
+                                 "bg-emerald-500"
+                               }`} 
                              />
                              <input 
-                                type="range" min="0" max="100" step="5"
+                                type="range" min="0" max="100" step="1"
                                 value={moduleCoverage[m.name] || 0}
                                 onChange={(e) => handleModuleCoverageChange(m.name, parseInt(e.target.value))}
-                                className="absolute inset-0 w-full opacity-0 cursor-pointer"
+                                disabled={true}
+                                className="absolute inset-0 w-full opacity-0 cursor-not-allowed"
                              />
                           </div>
                         </div>
@@ -894,13 +965,14 @@ function AssessmentContent() {
                              <span className="text-[11px] font-bold uppercase text-muted-foreground">{k}</span>
                              <span className="text-xs font-black tabular-nums">{v}%</span>
                           </div>
-                          <div className="relative h-1.5 bg-gray-100 dark:bg-white/5 rounded-full overflow-hidden">
+                           <div className="relative h-1.5 bg-gray-100 dark:bg-white/5 rounded-full overflow-hidden">
                             <motion.div initial={{ width: 0 }} animate={{ width: `${v}%` }} className="h-full bg-black dark:bg-white" />
                             <input 
                                type="range" min="0" max="100" step="5"
                                value={v}
                                onChange={(e) => handleSkillMappingChange(k, parseInt(e.target.value))}
-                               className="absolute inset-0 w-full opacity-0 cursor-pointer"
+                               disabled={true}
+                               className="absolute inset-0 w-full opacity-0 cursor-not-allowed"
                             />
                           </div>
                         </div>

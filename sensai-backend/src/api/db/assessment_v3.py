@@ -163,13 +163,15 @@ async def publish_assessment(user_id: int, data: dict, course_id: int = None, mi
                     "title": q.get("question_text", "Question"),
                     "type": "MCQ" if q.get("type") == "MCQ" else "SAQ",
                     "blocks": [{"id": str(uuid.uuid4()), "type": "text", "content": q.get("question_text")}],
-                    "options": q.get("options", []),
-                    "answer": [q.get("answer")] if q.get("answer") else [],
+                    "answer": [{"id": str(uuid.uuid4()), "type": "text", "content": q.get("answer")}] if q.get("answer") else [],
                     "explanation": q.get("explanation", ""),
                     "input_type": "radio" if q.get("type") == "MCQ" else "text",
                     "response_type": "text",
                     "max_attempts": 3,
-                    "is_feedback_shown": True
+                    "is_feedback_shown": True,
+                    "settings": {
+                        "options": [{"id": str(uuid.uuid4()), "type": "text", "content": str(opt)} for opt in q.get("options", [])]
+                    }
                 }
                 legacy_questions.append(legacy_q)
                 

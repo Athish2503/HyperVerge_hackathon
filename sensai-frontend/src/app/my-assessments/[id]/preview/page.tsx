@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, ArrowLeft, Globe, EyeOff, CheckCircle, BrainCircuit } from "lucide-react";
+import { Loader2, ArrowLeft, Globe, EyeOff, CheckCircle, BrainCircuit, Copy } from "lucide-react";
 import Link from "next/link";
 
 interface Question {
@@ -24,6 +24,7 @@ interface AssessmentData {
   config: any;
   questions: Question[];
   status: string;
+  share_token?: string;
 }
 
 export default function StandaloneAssessmentPreview({ params }: { params: { id: string } }) {
@@ -141,6 +142,29 @@ export default function StandaloneAssessmentPreview({ params }: { params: { id: 
           <p className="text-muted-foreground font-medium max-w-2xl text-lg">
             This is how your final assessment looks. You can share this test with users if it is published.
           </p>
+          
+          {isPublished && data.share_token && (
+            <div className="mt-8 bg-blue-500/5 border border-blue-500/20 rounded-3xl p-6 flex flex-col md:flex-row items-center gap-6 justify-between shadow-inner">
+              <div>
+                <h3 className="font-black text-blue-600 dark:text-blue-400 uppercase tracking-widest text-xs mb-1">Shareable Student Link</h3>
+                <p className="text-[13px] font-medium text-muted-foreground">Students can take the test via this link. They will not see any answers or explanations.</p>
+              </div>
+              <div className="flex items-center gap-2 bg-white dark:bg-black/40 p-2 rounded-2xl border border-gray-200 dark:border-white/10 w-full md:w-auto shadow-sm">
+                <code className="px-4 text-xs font-bold text-muted-foreground truncate max-w-[200px] sm:max-w-xs select-all">
+                  {typeof window !== "undefined" ? `${window.location.origin}/test/${data.share_token}` : ""}
+                </code>
+                <button 
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/test/${data.share_token}`);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-xl transition-all active:scale-95 shadow-md flex-shrink-0"
+                  title="Copy link"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-8">

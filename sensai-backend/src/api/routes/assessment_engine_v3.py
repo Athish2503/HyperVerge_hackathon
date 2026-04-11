@@ -39,14 +39,17 @@ class ParseCurriculumRequest(BaseModel):
 class CurriculumModuleDef(BaseModel):
     name: str = Field(..., description="Name of the module")
     topics: List[str] = Field(..., description="Key topics covered")
+    importance: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"
 
 class SuggestedModuleDef(BaseModel):
     name: str
     reason: str
+    importance: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"
 
 class ExtractedSkillDef(BaseModel):
     name: str
     type: Literal["core", "suggested"]
+    importance: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"
 
 class ParseCurriculumResponse(BaseModel):
     modules: List[CurriculumModuleDef]
@@ -96,6 +99,52 @@ async def parse_curriculum(request: ParseCurriculumRequest):
         suggested_modules=dedup(all_suggested),
         skills=dedup(all_skills)
     )
+
+class InputSanityCheckRequest(BaseModel):
+    text: str
+
+class InputSanityCheckResponse(BaseModel):
+    status: Literal["VALID", "PARTIALLY_VALID", "INVALID"]
+    cleaned_text: Optional[str] = None
+    reason: Optional[str] = None
+
+@router.post("/validate-input", response_model=InputSanityCheckResponse)
+async def validate_input(request: InputSanityCheckRequest):
+    """Sanity check and validate raw input text from user or file upload."""
+    prompt = f"""
+    You are an Assessment Input Validator. You must validate the following content to determine if it's acceptable curriculum or job description text.
+    
+    CRITICAL MANDATE:
+    If the text contains server errors, stack traces (e.g. ValidationError, traceback), Python errors, HTML/JSON API responses, or repetitive nonsense, YOU MUST CHOOSE 'INVALID'. DO NOT attempt to find meaning in stack traces.
+    
+    ACTION RULES:
+    1. INVALID: The text is garbage, logs, stack traces, unreadable symbols, html fragments, or empty.
+    2. PARTIALLY_VALID: Contains some garbage but also meaningful curriculum or job description content.
+    3. VALID: The input is fully readable and meaningful.
+    
+    If PARTIALLY_VALID, extract ONLY the meaningful sections into 'cleaned_text', and briefly explain what was ignored in 'reason'.
+    If INVALID, explain why in 'reason'.
+    If VALID, you may leave 'cleaned_text' and 'reason' empty or null.
+    
+    TEXT:
+    {request.text[:4000]}
+    """
+    try:
+        data = await run_llm_with_openai(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a ruthless and precise Assessment Input Validator. Reject stack traces immediately."},
+                {"role": "user", "content": prompt}
+            ],
+            response_model=InputSanityCheckResponse,
+            temperature=0.0,
+            max_output_tokens=2000
+        )
+        logger.info(f"Validation Result: {data.status} | Reason: {data.reason}")
+        return data
+    except Exception as e:
+        logger.error(f"Validation error: {e}")
+        return InputSanityCheckResponse(status="INVALID", reason=str(e))
 
 class ParseJDRequest(BaseModel):
     jd_text: str
@@ -172,6 +221,7 @@ async def generate_questions(request: GenerateQuestionsRequest):
         Modules selected: {', '.join(request.modules)}
         Module Coverages required: {request.module_coverage}
         Skills selected: {', '.join(request.skills)}
+        Difficulty: {','.request.difficulty  }
         Cognitive Mapping required: {request.skill_mapping}
         Question Distribution: {request.question_types}
 
@@ -508,7 +558,7 @@ async def extract_text_endpoint(file: UploadFile = File(...)):
 
 # --- PHASE 8: Management & Publishing ---
 
-USER_ID = 123 # Pattern match with existing temp users but use integer for V3
+USER_ID = 1 # Pattern match with existing temp users but use integer for V3
 
 class PublishRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
@@ -518,6 +568,16 @@ class PublishRequest(BaseModel):
     course_id: Optional[int] = None
     milestone_id: Optional[int] = None
     publish_type: str = "standalone"  # 'standalone' or 'course'
+
+@router.delete("/draft/{user_id}")
+async def delete_draft(user_id: int):
+    from api.db.assessment_v3 import delete_assessment_draft
+    try:
+        await delete_assessment_draft(user_id)
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Delete draft error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to reset assessment")
 
 @router.get("/my-assessments")
 async def list_my_assessments():
@@ -613,6 +673,41 @@ async def delete_my_assessment(assessment_id: int):
         logger.error(f"Delete assessment error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete assessment")
 
+@router.post("/my-assessments/{assessment_id}/create-version")
+async def create_assessment_version(assessment_id: int):
+    """Duplicates an assessment as a new version."""
+    import json
+    import uuid
+    from api.utils.db import get_new_db_connection, execute_db_operation
+    from api.config import assessment_v3_published_table_name
+    try:
+        # Fetch existing
+        query = f"SELECT title, config, questions, version FROM {assessment_v3_published_table_name} WHERE id = ? AND user_id = ?"
+        row = await execute_db_operation(query, (assessment_id, USER_ID), fetch_one=True)
+        if not row:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+            
+        title, config_txt, questions_txt, current_version = row[0], row[1], row[2], row[3]
+        new_version = (current_version or 1) + 1
+        
+        # Insert duplicate
+        insert_query = f"""
+            INSERT INTO {assessment_v3_published_table_name} 
+            (user_id, title, config, questions, status, version, share_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        async with get_new_db_connection() as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(insert_query, (
+                USER_ID, title, config_txt, questions_txt, "draft", new_version, str(uuid.uuid4())
+            ))
+            new_id = cursor.lastrowid
+            await conn.commit()
+            
+        return {"id": new_id, "title": title, "version": new_version}
+    except Exception as e:
+        logger.error(f"Create version error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create new version")
 @router.get("/available-courses")
 async def list_available_courses():
     try:
@@ -789,3 +884,43 @@ async def get_assessment_preview(assessment_id: int):
         logger.error(f"Preview error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/take/{share_token}")
+async def get_test_for_taking(share_token: str):
+    """Get assessment for students via share token, stripping answers."""
+    import json
+    from api.utils.db import execute_db_operation
+    from api.config import assessment_v3_published_table_name
+    try:
+        query = f"""
+            SELECT id, title, config, questions, course_id, status
+            FROM {assessment_v3_published_table_name}
+            WHERE share_token = ? AND deleted_at IS NULL
+        """
+        row = await execute_db_operation(query, (share_token,), fetch_one=True)
+        if not row:
+            raise HTTPException(status_code=404, detail="Test not found or link is invalid")
+        
+        status = row[5]
+        if status != "published" and not row[4]:
+            raise HTTPException(status_code=403, detail="This test is not currently accepting responses")
+            
+        config = json.loads(row[2]) if row[2] else {}
+        questions = json.loads(row[3]) if row[3] else []
+        
+        # Strip answers and explanations
+        safe_questions = []
+        for q in questions:
+            safe_q = {k: v for k, v in q.items() if k not in ["answer", "explanation", "status", "isRegenerating"]}
+            safe_questions.append(safe_q)
+            
+        return {
+            "id": row[0],
+            "title": row[1],
+            "config": config,
+            "questions": safe_questions
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Take test error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")

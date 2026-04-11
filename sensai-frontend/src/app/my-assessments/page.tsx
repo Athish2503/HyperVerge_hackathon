@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   FileText, CheckCircle, Clock, Search, Plus, Trash2, Eye,
   BookOpen, ArrowRight, Layers, Edit3, Save, X, Loader2,
-  Building, Target, Globe, RefreshCw, ExternalLink, MessageSquare
+  Building, Target, Globe, RefreshCw, ExternalLink, MessageSquare, CopyPlus
 } from "lucide-react";
 import Link from "next/link";
 import { Header } from "@/components/layout/header";
@@ -61,6 +61,12 @@ export default function MyAssessmentsPage() {
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [inlineEditingQId, setInlineEditingQId] = useState<string | null>(null);
   const [feedbackModal, setFeedbackModal] = useState({ isOpen: false, type: "full", qId: "", segment: "", feedback: "" });
+
+  // Custom Alert Dialog
+  const [dialog, setDialog] = useState<{isOpen: boolean, title: string, message: string}>({isOpen: false, title: "", message: ""});
+  const showAlert = (title: string, message: string) => {
+    setDialog({ isOpen: true, title, message });
+  };
 
   // Full question editor modal
   const [questionEditorOpen, setQuestionEditorOpen] = useState(false);
@@ -199,7 +205,7 @@ export default function MyAssessmentsPage() {
         setEditingQuestions(updatedQs);
       }
     } catch(e) {
-      alert("Could not refresh this question. The model might be busy.");
+      showAlert("Refresh Failed", "Could not refresh this question. The model might be busy.");
       const resetQs = [...editingQuestions];
       delete resetQs[qIndex].status;
       setEditingQuestions(resetQs);
@@ -224,9 +230,22 @@ export default function MyAssessmentsPage() {
         throw new Error("Save failed");
       }
     } catch {
-      alert("Failed to save changes.");
+      showAlert("Update Failed", "Failed to save changes.");
     } finally {
       setIsSavingEdit(false);
+    }
+  };
+
+  const duplicateAssessment = async (id: number) => {
+    try {
+      const res = await fetch(`${API}/my-assessments/${id}/create-version`, { method: "POST" });
+      if (res.ok) {
+        await fetchAssessments();
+      } else {
+        showAlert("Duplication Failed", "Failed to duplicate assessment.");
+      }
+    } catch {
+      showAlert("Duplication Failed", "Failed to duplicate assessment.");
     }
   };
 
@@ -237,7 +256,7 @@ export default function MyAssessmentsPage() {
       if (detailId === id) { setDetailId(null); setDetailData(null); }
       setDeleteConfirm(null);
     } catch {
-      alert("Failed to delete.");
+      showAlert("Delete Failed", "Failed to delete assessment.");
     }
   };
 
@@ -279,7 +298,7 @@ export default function MyAssessmentsPage() {
         setPublishSuccess(false);
       }, 2000);
     } catch (e: any) {
-      alert(e.message || "Failed to publish to course.");
+      showAlert("Publish Failed", e.message || "Failed to publish to course.");
     } finally {
       setIsPublishing(false);
     }
@@ -405,6 +424,11 @@ export default function MyAssessmentsPage() {
                                 className="p-1.5 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all text-muted-foreground hover:text-blue-500"
                                 title="Publish to Course">
                                 <Building className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => duplicateAssessment(a.id)}
+                                className="p-1.5 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-all text-muted-foreground hover:text-emerald-500"
+                                title="Duplicate as New Version">
+                                <CopyPlus className="w-3.5 h-3.5" />
                               </button>
                             </>
                           )}
@@ -891,6 +915,31 @@ export default function MyAssessmentsPage() {
                   Delete
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Alert Dialog */}
+      <AnimatePresence>
+        {dialog.isOpen && (
+          <div className="fixed inset-0 z-[140] flex items-center justify-center p-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setDialog(prev => ({ ...prev, isOpen: false }))}
+              className="absolute inset-0 bg-black/60 backdrop-blur-md" />
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-md bg-white dark:bg-[#111] rounded-[32px] overflow-hidden shadow-2xl border border-gray-100 dark:border-white/10 p-8 text-center">
+              <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <AlertCircle className="w-8 h-8 text-amber-500" />
+              </div>
+              <h3 className="text-xl font-black mb-3">{dialog.title}</h3>
+              <p className="text-muted-foreground font-medium text-sm mb-8">{dialog.message}</p>
+              <button 
+                onClick={() => setDialog(prev => ({ ...prev, isOpen: false }))}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl hover:opacity-90 active:scale-95 transition-all"
+              >
+                Understood
+              </button>
             </motion.div>
           </div>
         )}

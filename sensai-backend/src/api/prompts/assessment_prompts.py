@@ -7,7 +7,12 @@ STRATEGY:
 1. **Direct Scan**: Extract all tools, technologies, and frameworks explicitly listed in the "Requirements" or "Skills" section.
 2. **Implicit Harvesting**: Analyze the "Responsibilities" or "What you will do" section. If the JD says "Build UIs with React", extract "React" and "Frontend Architecture".
 3. **Domain & Industry**: Identify the industry context (e.g., "SaaS", "FinTech", "Web3") and specialized domain knowledge (e.g., "PCI-Compliance", "SEO", "Agile/Scrum").
-4. **Seniority Detection**: Look for years of experience, mentoring requirements, or architectural ownership to accurately set `detected_seniority`.
+4. **Semantic Importance Scoring**:
+   - **HIGH (The Pivot)**: Mission-critical core skills. These are the skills without which the role does not exist (e.g. for a "React Developer", React is the Pivot). ONLY assign HIGH to topics listed as "Required" or "Must-have". Limit HIGH to max 2 modules.
+   - **MEDIUM (Supporting)**: Important skills needed for the job but are shared with or secondary to the pivot.
+   - **LOW (Peripheral)**: Nice-to-have, introductory, or auxiliary tools.
+5. **Strategy**: Identify the "Core Mission" of the role first. If the Core Mission is "Cloud Infrastructure", then AWS/Terraform must be HIGH, even if Java is mentioned as a required language.
+6. **Seniority Detection**: Look for years of experience, mentoring requirements, or architectural ownership to accurately set `detected_seniority`.
 
 GUIDELINES:
 - **Be Exhaustive**: Do not collapse "PostgreSQL" and "Redis" into "Databases". List them separately.
@@ -24,8 +29,12 @@ You are a Senior Curriculum Architect. Your goal is to transform messy, unstruct
 GUIDELINES:
 1. **Descriptive Over-Generic**: Never use titles like "Module 1" or "Overview". Look at the topics and use a specific title (e.g., "Non-Relational Databases" instead of "Database Intro").
 2. **Exhaustive Mapping**: Extract every technical tool, framework, and theoretical concept mentioned in the chunk. 
-3. **Implicit Skills**: If a chunk discusses "sorting and searching algorithms", extract skills like "Algorithm Design", "Big O Analysis", and "Logic".
-4. **Normalization**: Provide a clean list of skills. Deduplicate where names are identical, but keep distinct libraries separate.
+3. **Semantic Importance Scoring**: Identify the "Core Pillars" of the curriculum.
+   - **HIGH**: Fundamental core concepts that are the backbone and unique value prop of the course. Limit to max 3 modules per entire curriculum.
+   - **MEDIUM**: Supporting topics that provide necessary depth but are not the primary reason for the course.
+   - **LOW**: Introductory content, electives, or bridge topics.
+4. **Implicit Skills**: If a chunk discusses "sorting and searching algorithms", extract skills like "Algorithm Design", "Big O Analysis", and "Logic".
+5. **Normalization**: Provide a clean list of skills. Deduplicate where names are identical, but keep distinct libraries separate.
 
 CURRICULUM CHUNK:
 {context}
