@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, use } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Loader2, ArrowLeft, Globe, EyeOff, CheckCircle, BrainCircuit, Copy } from "lucide-react";
 import Link from "next/link";
@@ -27,7 +27,8 @@ interface AssessmentData {
   share_token?: string;
 }
 
-export default function StandaloneAssessmentPreview({ params }: { params: { id: string } }) {
+export default function StandaloneAssessmentPreview({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
   const [data, setData] = useState<AssessmentData | null>(null);
   const [loading, setLoading] = useState(true);
   const [isToggling, setIsToggling] = useState(false);
@@ -35,7 +36,7 @@ export default function StandaloneAssessmentPreview({ params }: { params: { id: 
   useEffect(() => {
     const fetchAssessment = async () => {
       try {
-        const res = await fetch(`http://localhost:8001/assessments_v3/my-assessments/${params.id}/preview`);
+        const res = await fetch(`http://localhost:8001/assessments_v3/my-assessments/${id}/preview`);
         if (res.ok) {
           const d = await res.json();
           setData(d);
@@ -47,12 +48,12 @@ export default function StandaloneAssessmentPreview({ params }: { params: { id: 
       }
     };
     fetchAssessment();
-  }, [params.id]);
+  }, [id]);
 
   const togglePublish = async () => {
     setIsToggling(true);
     try {
-      const res = await fetch(`http://localhost:8001/assessments_v3/my-assessments/${params.id}/toggle-publish`, {
+      const res = await fetch(`http://localhost:8001/assessments_v3/my-assessments/${id}/toggle-publish`, {
         method: "POST"
       });
       if (res.ok) {
