@@ -28,6 +28,7 @@ from api.config import (
     integrations_table_name,
     assignment_table_name,
     assessment_v3_drafts_table_name,
+    assessment_v3_published_table_name,
 )
 
 
@@ -256,6 +257,34 @@ async def create_assessment_v3_drafts_table():
         await conn.commit()
 
 
+async def create_assessment_v3_published_table():
+    """Migration: Create the assessment_v3_published table."""
+    async with get_new_db_connection() as conn:
+        cursor = await conn.cursor()
+        
+        await cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {assessment_v3_published_table_name} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                config TEXT NOT NULL,
+                questions TEXT NOT NULL,
+                version INTEGER DEFAULT 1,
+                status TEXT DEFAULT 'published',
+                course_id INTEGER,
+                milestone_id INTEGER,
+                task_id INTEGER,
+                share_token TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                deleted_at DATETIME
+            )
+        """)
+        
+        await conn.commit()
+
+
 async def run_migrations():
     await cleanup_invalid_chat_history()
     await create_assessment_v3_drafts_table()
+    await create_assessment_v3_published_table()

@@ -42,7 +42,7 @@ class AssessmentItem(BaseModel):
     difficulty: Literal["Easy", "Medium", "Hard"]
     question_text: str
     options: Optional[List[str]] = None
-    model_answer: str
+    correct_answer: str
     rationale: str
 
 class AssessmentOutput(BaseModel):

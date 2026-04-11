@@ -61,6 +61,7 @@ integrations_table_name = "integrations"
 bq_sync_table_name = "bq_sync"
 assignment_table_name = "assignment"
 assessment_v3_drafts_table_name = "assessment_v3_drafts"
+assessment_v3_published_table_name = "assessment_v3_published"
 
 UPLOAD_FOLDER_NAME = "uploads"
 
